@@ -986,6 +986,14 @@
           "type": {
             "option": "i64"
           }
+        },
+        {
+          "name": "operator_type",
+          "type": {
+            "defined": {
+              "name": "OperatorType"
+            }
+          }
         }
       ]
     },
@@ -1276,6 +1284,110 @@
       ]
     },
     {
+      "name": "initialize_authority",
+      "docs": [
+        "Creator-only. Sets up delegated authority for an AI agent or operator.",
+        "Principal can be any wallet — human, DAO multisig, or another AI controller."
+      ],
+      "discriminator": [
+        13,
+        186,
+        25,
+        16,
+        218,
+        31,
+        90,
+        1
+      ],
+      "accounts": [
+        {
+          "name": "project_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  106,
+                  101,
+                  99,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state.mint",
+                "account": "ProjectState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "principal",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "operator",
+          "type": "pubkey"
+        },
+        {
+          "name": "can_open_cycle",
+          "type": "bool"
+        },
+        {
+          "name": "can_close_cycle",
+          "type": "bool"
+        },
+        {
+          "name": "can_set_hard_cap",
+          "type": "bool"
+        },
+        {
+          "name": "can_route_treasury",
+          "type": "bool"
+        },
+        {
+          "name": "spending_limit_lamports",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "initialize_protocol",
       "discriminator": [
         188,
@@ -1418,7 +1530,15 @@
           "writable": true
         },
         {
-          "name": "creator",
+          "name": "authority_config",
+          "docs": [
+            "Optional — pass None when caller is creator (no AuthorityConfig needed).",
+            "Pass Some when caller is an operator — program will verify permission."
+          ],
+          "optional": true
+        },
+        {
+          "name": "caller",
           "writable": true,
           "signer": true
         },
@@ -1505,7 +1625,14 @@
           }
         },
         {
-          "name": "creator",
+          "name": "authority_config",
+          "docs": [
+            "Optional — pass None when caller is creator, Some when caller is operator."
+          ],
+          "optional": true
+        },
+        {
+          "name": "caller",
           "writable": true,
           "signer": true
         }
@@ -1516,9 +1643,125 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "update_authority",
+      "docs": [
+        "Principal-only. Updates operator permissions or spending limit."
+      ],
+      "discriminator": [
+        32,
+        46,
+        64,
+        28,
+        149,
+        75,
+        243,
+        88
+      ],
+      "accounts": [
+        {
+          "name": "project_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  106,
+                  101,
+                  99,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state.mint",
+                "account": "ProjectState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "principal",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "operator",
+          "type": "pubkey"
+        },
+        {
+          "name": "can_open_cycle",
+          "type": "bool"
+        },
+        {
+          "name": "can_close_cycle",
+          "type": "bool"
+        },
+        {
+          "name": "can_set_hard_cap",
+          "type": "bool"
+        },
+        {
+          "name": "can_route_treasury",
+          "type": "bool"
+        },
+        {
+          "name": "spending_limit_lamports",
+          "type": "u64"
+        }
+      ]
     }
   ],
   "accounts": [
+    {
+      "name": "AuthorityConfig",
+      "discriminator": [
+        70,
+        68,
+        21,
+        32,
+        12,
+        21,
+        85,
+        159
+      ]
+    },
     {
       "name": "CycleState",
       "discriminator": [
@@ -1569,6 +1812,99 @@
         179,
         215,
         209
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "CycleActivated",
+      "discriminator": [
+        165,
+        64,
+        170,
+        23,
+        53,
+        188,
+        208,
+        115
+      ]
+    },
+    {
+      "name": "CycleClosed",
+      "discriminator": [
+        221,
+        230,
+        223,
+        134,
+        200,
+        100,
+        203,
+        231
+      ]
+    },
+    {
+      "name": "CycleOpened",
+      "discriminator": [
+        240,
+        47,
+        217,
+        52,
+        132,
+        172,
+        71,
+        98
+      ]
+    },
+    {
+      "name": "HardCapSet",
+      "discriminator": [
+        162,
+        206,
+        138,
+        104,
+        59,
+        27,
+        149,
+        81
+      ]
+    },
+    {
+      "name": "ProjectCreated",
+      "discriminator": [
+        192,
+        10,
+        163,
+        29,
+        185,
+        31,
+        67,
+        168
+      ]
+    },
+    {
+      "name": "RightsExercised",
+      "discriminator": [
+        167,
+        23,
+        95,
+        183,
+        44,
+        66,
+        57,
+        146
+      ]
+    },
+    {
+      "name": "TokensPurchased",
+      "discriminator": [
+        214,
+        119,
+        105,
+        186,
+        114,
+        205,
+        228,
+        181
       ]
     }
   ],
@@ -1652,9 +1988,73 @@
       "code": 6015,
       "name": "LaunchTimeNotReached",
       "msg": "Scheduled launch time has not been reached yet"
+    },
+    {
+      "code": 6016,
+      "name": "InsufficientAuthority",
+      "msg": "Operator lacks permission for this instruction"
+    },
+    {
+      "code": 6017,
+      "name": "SpendingLimitExceeded",
+      "msg": "Action exceeds operator spending limit — escalate to principal"
+    },
+    {
+      "code": 6018,
+      "name": "OperatorNotRegistered",
+      "msg": "No AuthorityConfig found — call initialize_authority first"
     }
   ],
   "types": [
+    {
+      "name": "AuthorityConfig",
+      "docs": [
+        "On-chain authority delegation for AI agents.",
+        "The principal configures what the operator can do autonomously.",
+        "Principal can be a human wallet, DAO multisig, or another AI controller — protocol doesn't care."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "principal",
+            "type": "pubkey"
+          },
+          {
+            "name": "operator",
+            "type": "pubkey"
+          },
+          {
+            "name": "can_open_cycle",
+            "type": "bool"
+          },
+          {
+            "name": "can_close_cycle",
+            "type": "bool"
+          },
+          {
+            "name": "can_set_hard_cap",
+            "type": "bool"
+          },
+          {
+            "name": "can_route_treasury",
+            "type": "bool"
+          },
+          {
+            "name": "spending_limit_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
     {
       "name": "CurveType",
       "type": {
@@ -1668,6 +2068,102 @@
           },
           {
             "name": "ExpLite"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CycleActivated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "project_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "cycle_index",
+            "type": "u8"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CycleClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "project_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "cycle_index",
+            "type": "u8"
+          },
+          {
+            "name": "tokens_sold",
+            "type": "u64"
+          },
+          {
+            "name": "sol_raised",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CycleOpened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "project_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "cycle_index",
+            "type": "u8"
+          },
+          {
+            "name": "curve_type",
+            "type": "u8"
+          },
+          {
+            "name": "supply_cap",
+            "type": "u64"
+          },
+          {
+            "name": "base_price",
+            "type": "u64"
+          },
+          {
+            "name": "rights_window_end",
+            "type": "i64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -1765,6 +2261,26 @@
       }
     },
     {
+      "name": "HardCapSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "hard_cap",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
       "name": "HolderRights",
       "type": {
         "kind": "struct",
@@ -1796,6 +2312,62 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OperatorType",
+      "docs": [
+        "Disclosure-only field. Not enforced by the protocol — surfaced in UI."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Human"
+          },
+          {
+            "name": "AiAssisted"
+          },
+          {
+            "name": "AiAutonomous"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProjectCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "project_state",
+            "type": "pubkey"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "supply_mode",
+            "type": "u8"
+          },
+          {
+            "name": "total_supply",
+            "type": "u64"
+          },
+          {
+            "name": "operator_type",
+            "type": "u8"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -1870,6 +2442,14 @@
             }
           },
           {
+            "name": "operator_type",
+            "type": {
+              "defined": {
+                "name": "OperatorType"
+              }
+            }
+          },
+          {
             "name": "bump",
             "type": "u8"
           }
@@ -1909,6 +2489,38 @@
       }
     },
     {
+      "name": "RightsExercised",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "holder",
+            "type": "pubkey"
+          },
+          {
+            "name": "cycle_index",
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "sol_paid",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
       "name": "SupplyMode",
       "type": {
         "kind": "enum",
@@ -1918,6 +2530,42 @@
           },
           {
             "name": "Elastic"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TokensPurchased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "cycle_index",
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "sol_paid",
+            "type": "u64"
+          },
+          {
+            "name": "price_per_token",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }

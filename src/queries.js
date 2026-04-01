@@ -164,6 +164,39 @@ async function getBalance(connection, address) {
   }
 }
 
+/**
+ * Fetch the AuthorityConfig account for a project.
+ * Returns null if no authority config has been initialized.
+ *
+ * @param {import('@coral-xyz/anchor').Program} program
+ * @param {string|PublicKey} mintAddress
+ * @returns {Promise<{publicKey: PublicKey, account: object}|null>}
+ */
+/**
+ * Fetch the AuthorityConfig account for a project.
+ *
+ * @param {import('@coral-xyz/anchor').Program} program
+ * @param {string|PublicKey} mintAddress
+ * @returns {Promise<{publicKey: PublicKey, account: object}|null>}
+ */
+async function fetchAuthorityConfig(program, mintAddress) {
+  try {
+    const mint = new PublicKey(mintAddress);
+    const [projectStatePDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from('project'), mint.toBuffer()],
+      program.programId
+    );
+    const [authorityConfigPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from('authority'), projectStatePDA.toBuffer()],
+      program.programId
+    );
+    const account = await program.account.authorityConfig.fetch(authorityConfigPDA);
+    return { publicKey: authorityConfigPDA, account };
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   fetchAllProjects,
   fetchProject,
@@ -171,4 +204,5 @@ module.exports = {
   fetchActiveCycle,
   fetchHolderRights,
   getBalance,
+  fetchAuthorityConfig,
 };

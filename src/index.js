@@ -19,6 +19,9 @@
 // ─── Main client ──────────────────────────────────────────────────────────────
 const { MammothClient } = require('./client');
 
+// ─── Monitor (bot/agent event subscriptions) ──────────────────────────────────
+const { MammothMonitor } = require('./monitor');
+
 // ─── Errors ───────────────────────────────────────────────────────────────────
 const { MammothError, ErrorCode, parseTxError } = require('./errors');
 
@@ -84,6 +87,9 @@ const IDL = require('./idl/mammoth_core.json');
 module.exports = {
   // Client
   MammothClient,
+
+  // Monitor (bot/agent event subscriptions + query utilities)
+  MammothMonitor,
 
   // Errors
   MammothError,

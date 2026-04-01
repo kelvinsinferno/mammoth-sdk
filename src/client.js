@@ -98,6 +98,7 @@ class MammothClient {
    * @param {number} params.reserveBps — reserve SOL split BPS (e.g. 2000)
    * @param {number} params.sinkBps — sink SOL split BPS (e.g. 800)
    * @param {number|null} [params.launchAt=null] — Unix timestamp to lock cycle opening until, or null
+   * @param {'human'|'ai_assisted'|'ai_autonomous'} [params.operatorType='human'] — disclosure field: who operates this project
    * @param {import('@solana/web3.js').Keypair} [params.mintKeypair] — optional existing mint keypair
    * @returns {Promise<{tx: string, mint: string, projectState: import('@solana/web3.js').PublicKey}>}
    * @throws {MammothError}
@@ -107,9 +108,18 @@ class MammothClient {
     const supplyModeObj =
       params.supplyMode === 'elastic' ? { elastic: {} } : { fixed: {} };
 
+    // Map operatorType string to on-chain enum variant
+    const operatorTypeMap = {
+      human: { human: {} },
+      ai_assisted: { aiAssisted: {} },
+      ai_autonomous: { aiAutonomous: {} },
+    };
+    const operatorTypeObj = operatorTypeMap[params.operatorType] || { human: {} };
+
     return instructions.createProject(program, {
       ...params,
       supplyMode: supplyModeObj,
+      operatorType: operatorTypeObj,
     });
   }
 
@@ -303,17 +313,82 @@ class MammothClient {
    * @param {string} instruction — instruction name (e.g. 'openCycle', 'closeCycle', 'buyTokens')
    * @returns {{ allowed: boolean, reason: string }}
    */
-  checkOperatorPermission(mintAddress, operatorAddress, instruction) {
-    // TASK-AI-004: AuthorityConfig implementation required.
-    // This stub ensures agents can discover the interface and build around it.
-    console.warn(
-      '[MammothSDK] checkOperatorPermission is a stub. ' +
-      'Full implementation requires TASK-AI-004 (AuthorityConfig on-chain account).'
-    );
-    return {
-      allowed: false,
-      reason: 'not-implemented — awaiting TASK-AI-004 AuthorityConfig',
-    };
+  /**
+   * Check whether an operator address has permission to execute a given instruction.
+   * Performs a live on-chain fetch of the AuthorityConfig PDA.
+   *
+   * @param {string|import('@solana/web3.js').PublicKey} mintAddress
+   * @param {string|import('@solana/web3.js').PublicKey} operatorAddress
+   * @param {'openCycle'|'closeCycle'|'setHardCap'|'routeTreasury'} instruction
+   * @returns {Promise<{ allowed: boolean, reason: string }>}
+   */
+  async checkOperatorPermission(mintAddress, operatorAddress, instruction) {
+    try {
+      const program = this._getProgram(false);
+      const config = await queries.fetchAuthorityConfig(program, mintAddress);
+      if (!config) return { allowed: false, reason: 'OperatorNotRegistered' };
+
+      const operator = operatorAddress?.toBase58 ? operatorAddress.toBase58() : String(operatorAddress);
+      if (config.account.operator.toBase58() !== operator) {
+        return { allowed: false, reason: 'OperatorNotRegistered' };
+      }
+      const permMap = {
+        openCycle: config.account.canOpenCycle,
+        closeCycle: config.account.canCloseCycle,
+        setHardCap: config.account.canSetHardCap,
+        routeTreasury: config.account.canRouteTreasury,
+      };
+      const allowed = permMap[instruction] ?? false;
+      return { allowed, reason: allowed ? 'permitted' : 'InsufficientAuthority' };
+    } catch (err) {
+      return { allowed: false, reason: `error: ${err.message}` };
+    }
+  }
+
+  // ─── Authority management (TASK-AI-004) ──────────────────────────────────
+
+  /**
+   * Initialize on-chain authority delegation for a project.
+   * Principal (creator) configures what an operator can do autonomously.
+   *
+   * @param {object} params
+   * @param {string} params.mintAddress — project mint
+   * @param {string} params.operator — operator wallet address
+   * @param {boolean} [params.canOpenCycle=true]
+   * @param {boolean} [params.canCloseCycle=false]
+   * @param {boolean} [params.canSetHardCap=false] — DANGEROUS — explicitly opt-in only
+   * @param {boolean} [params.canRouteTreasury=false]
+   * @param {number} [params.spendingLimitLamports=0] — 0 = no limit
+   * @returns {Promise<{signature: string}>}
+   */
+  async initializeAuthority(params) {
+    const program = this._getProgram(true);
+    return instructions.initializeAuthority(program, params);
+    // TODO: wire to Anchor instruction once IDL is updated post-TASK-AI-004 redeploy
+  }
+
+  /**
+   * Update authority config. Principal-only.
+   *
+   * @param {object} params — same fields as initializeAuthority
+   * @returns {Promise<{signature: string}>}
+   */
+  async updateAuthority(params) {
+    const program = this._getProgram(true);
+    return instructions.updateAuthority(program, params);
+    // TODO: wire to Anchor instruction once IDL is updated post-TASK-AI-004 redeploy
+  }
+
+  /**
+   * Fetch the AuthorityConfig account for a project.
+   *
+   * @param {string} mintAddress
+   * @returns {Promise<object|null>}
+   */
+  async fetchAuthorityConfig(mintAddress) {
+    const program = this._getProgram(false);
+    return queries.fetchAuthorityConfig(program, mintAddress);
+    // TODO: wire once IDL reflects AuthorityConfig account post-redeploy
   }
 }
 

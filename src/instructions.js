@@ -395,6 +395,93 @@ async function activateCycle(program, mintAddress, cycleIndex) {
   }
 }
 
+/**
+ * Initialize AuthorityConfig for a project — delegate operations to an AI agent or operator.
+ * Principal (creator) sets what the operator can do autonomously.
+ *
+ * @param {import('@coral-xyz/anchor').Program} program
+ * @param {object} params
+ * @param {string} params.mintAddress
+ * @param {string} params.operator — operator wallet address (base58)
+ * @param {boolean} [params.canOpenCycle=true]
+ * @param {boolean} [params.canCloseCycle=false]
+ * @param {boolean} [params.canSetHardCap=false] — DANGEROUS — off by default
+ * @param {boolean} [params.canRouteTreasury=false]
+ * @param {number} [params.spendingLimitLamports=0] — 0 = no limit
+ * @returns {Promise<{signature: string}>}
+ */
+async function initializeAuthority(program, params) {
+  try {
+    const mintPubkey = new PublicKey(params.mintAddress);
+    const operatorPubkey = new PublicKey(params.operator);
+
+    // Derive project_state PDA
+    const [projectStatePDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from('project'), mintPubkey.toBuffer()],
+      program.programId
+    );
+
+    const tx = await program.methods
+      .initializeAuthority(
+        operatorPubkey,
+        params.canOpenCycle ?? true,
+        params.canCloseCycle ?? false,
+        params.canSetHardCap ?? false,
+        params.canRouteTreasury ?? false,
+        new BN(params.spendingLimitLamports ?? 0)
+      )
+      .accounts({
+        projectState: projectStatePDA,
+        principal: program.provider.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc({ commitment: 'confirmed' });
+
+    return { signature: tx };
+  } catch (err) {
+    throw parseTxError(err);
+  }
+}
+
+/**
+ * Update an existing AuthorityConfig. Principal-only.
+ *
+ * @param {import('@coral-xyz/anchor').Program} program
+ * @param {object} params — same fields as initializeAuthority
+ * @returns {Promise<{signature: string}>}
+ */
+async function updateAuthority(program, params) {
+  try {
+    const mintPubkey = new PublicKey(params.mintAddress);
+    const operatorPubkey = new PublicKey(params.operator);
+
+    const [projectStatePDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from('project'), mintPubkey.toBuffer()],
+      program.programId
+    );
+
+    const tx = await program.methods
+      .updateAuthority(
+        operatorPubkey,
+        params.canOpenCycle ?? true,
+        params.canCloseCycle ?? false,
+        params.canSetHardCap ?? false,
+        params.canRouteTreasury ?? false,
+        new BN(params.spendingLimitLamports ?? 0)
+      )
+      .accounts({
+        projectState: projectStatePDA,
+        principal: program.provider.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc({ commitment: 'confirmed' });
+
+    return { signature: tx };
+  } catch (err) {
+    throw parseTxError(err);
+  }
+}
+
 module.exports = {
   createProject,
   openCycle,
@@ -403,4 +490,6 @@ module.exports = {
   buyTokens,
   exerciseRights,
   activateCycle,
+  initializeAuthority,
+  updateAuthority,
 };
