@@ -22,6 +22,10 @@ const { MammothClient } = require('./client');
 // ─── Monitor (bot/agent event subscriptions) ──────────────────────────────────
 const { MammothMonitor } = require('./monitor');
 
+// ─── Merkle (rights snapshot + proof generation) ──────────────────────────────
+const { getTokenHolders, buildRightsTree, hashLeaf, hashPair, MammothMonitor: _m, MerkleRightsTree } = require('./merkle');
+const merkleExports = require('./merkle');
+
 // ─── Errors ───────────────────────────────────────────────────────────────────
 const { MammothError, ErrorCode, parseTxError } = require('./errors');
 
@@ -90,6 +94,9 @@ module.exports = {
 
   // Monitor (bot/agent event subscriptions + query utilities)
   MammothMonitor,
+
+  // Merkle (rights snapshot, tree building, proof generation)
+  ...merkleExports,
 
   // Errors
   MammothError,

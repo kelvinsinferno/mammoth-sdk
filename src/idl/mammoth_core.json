@@ -375,6 +375,111 @@
       ]
     },
     {
+      "name": "claim_rights",
+      "docs": [
+        "Holder submits a Merkle proof to claim their rights allocation.",
+        "Verifies the proof against rights_merkle_root, then creates a HolderRights account.",
+        "This replaces the creator-driven create_holder_rights for scale deployments.",
+        "",
+        "Leaf hash = keccak256(holder_pubkey || rights_amount_le_bytes)",
+        "",
+        "@param proof        Vec of 32-byte sibling hashes from leaf to root",
+        "@param rights_amount Amount of rights tokens the holder is claiming"
+      ],
+      "discriminator": [
+        75,
+        87,
+        204,
+        238,
+        114,
+        46,
+        108,
+        148
+      ],
+      "accounts": [
+        {
+          "name": "project_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  106,
+                  101,
+                  99,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state.mint",
+                "account": "ProjectState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cycle_state"
+        },
+        {
+          "name": "holder_rights",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  103,
+                  104,
+                  116,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "cycle_state"
+              },
+              {
+                "kind": "account",
+                "path": "holder"
+              }
+            ]
+          }
+        },
+        {
+          "name": "holder",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "proof",
+          "type": {
+            "vec": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        },
+        {
+          "name": "rights_amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "close_cycle",
       "discriminator": [
         230,
@@ -1645,6 +1750,85 @@
       ]
     },
     {
+      "name": "set_rights_merkle_root",
+      "docs": [
+        "Creator (or authorized operator) sets the Merkle root for rights distribution.",
+        "Called after open_cycle, before activate_cycle.",
+        "The root commits to a list of (holder_pubkey, rights_amount) pairs computed off-chain.",
+        "Holders then claim their rights by submitting a Merkle proof via claim_rights.",
+        "",
+        "@param merkle_root   32-byte Keccak256 Merkle root of leaf hashes",
+        "@param holder_count  informational count of holders in the snapshot (not verified on-chain)"
+      ],
+      "discriminator": [
+        193,
+        74,
+        234,
+        28,
+        52,
+        130,
+        189,
+        181
+      ],
+      "accounts": [
+        {
+          "name": "project_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  106,
+                  101,
+                  99,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state.mint",
+                "account": "ProjectState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cycle_state",
+          "writable": true
+        },
+        {
+          "name": "authority_config",
+          "docs": [
+            "Optional — required when caller is an operator"
+          ],
+          "optional": true
+        },
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "merkle_root",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "holder_count",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "update_authority",
       "docs": [
         "Principal-only. Updates operator permissions or spending limit."
@@ -1869,6 +2053,19 @@
       ]
     },
     {
+      "name": "MerkleRightsSet",
+      "discriminator": [
+        137,
+        138,
+        188,
+        72,
+        166,
+        145,
+        136,
+        82
+      ]
+    },
+    {
       "name": "ProjectCreated",
       "discriminator": [
         192,
@@ -1879,6 +2076,19 @@
         31,
         67,
         168
+      ]
+    },
+    {
+      "name": "RightsClaimed",
+      "discriminator": [
+        110,
+        10,
+        75,
+        102,
+        229,
+        69,
+        105,
+        61
       ]
     },
     {
@@ -1991,16 +2201,26 @@
     },
     {
       "code": 6016,
+      "name": "MerkleRootNotSet",
+      "msg": "Merkle root not set for this cycle — call set_rights_merkle_root first"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidMerkleProof",
+      "msg": "Merkle proof is invalid — proof does not verify against stored root"
+    },
+    {
+      "code": 6018,
       "name": "InsufficientAuthority",
       "msg": "Operator lacks permission for this instruction"
     },
     {
-      "code": 6017,
+      "code": 6019,
       "name": "SpendingLimitExceeded",
       "msg": "Action exceeds operator spending limit — escalate to principal"
     },
     {
-      "code": 6018,
+      "code": 6020,
       "name": "OperatorNotRegistered",
       "msg": "No AuthorityConfig found — call initialize_authority first"
     }
@@ -2234,6 +2454,23 @@
             "type": "u64"
           },
           {
+            "name": "rights_merkle_root",
+            "docs": [
+              "Merkle root of (holder_pubkey, rights_amount) pairs.",
+              "None = no rights for this cycle (or using legacy create_holder_rights).",
+              "Set via set_rights_merkle_root before or during open_cycle.",
+              "Holders claim rights by submitting a Merkle proof via claim_rights."
+            ],
+            "type": {
+              "option": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
+          },
+          {
             "name": "bump",
             "type": "u8"
           }
@@ -2312,6 +2549,39 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MerkleRightsSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "cycle_index",
+            "type": "u8"
+          },
+          {
+            "name": "merkle_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "holder_count",
+            "type": "u32"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
@@ -2484,6 +2754,34 @@
           {
             "name": "default_sink_bps",
             "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RightsClaimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "holder",
+            "type": "pubkey"
+          },
+          {
+            "name": "cycle_index",
+            "type": "u8"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
           }
         ]
       }
