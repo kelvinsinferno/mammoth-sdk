@@ -30,6 +30,11 @@ const ErrorCode = {
   ZERO_STEP_SIZE: 'ZERO_STEP_SIZE',
   RIGHTS_WINDOW_STILL_OPEN: 'RIGHTS_WINDOW_STILL_OPEN',
   LAUNCH_TIME_NOT_REACHED: 'LAUNCH_TIME_NOT_REACHED',
+  INVALID_CYCLE_PROJECT: 'INVALID_CYCLE_PROJECT',
+  INVALID_PROJECT_MINT: 'INVALID_PROJECT_MINT',
+  INVALID_RIGHTS_PROJECT: 'INVALID_RIGHTS_PROJECT',
+  INVALID_RIGHTS_CYCLE: 'INVALID_RIGHTS_CYCLE',
+  INVALID_RIGHTS_HOLDER: 'INVALID_RIGHTS_HOLDER',
 
   // SDK-level errors
   INVALID_PARAMS: 'INVALID_PARAMS',
@@ -86,53 +91,74 @@ function parseTxError(error) {
     return new MammothError(ErrorCode.USER_REJECTED, 'User rejected the transaction', error);
   }
 
-  // Insufficient funds
+  // FIX SDK-8: Use specific patterns to avoid false positives on substring matches.
+  // Anchor errors follow format: "Error Code: <Name>" or "custom program error: 0x<hex>"
+  // IDL custom errors start at 6000 (0x1770). Match the specific hex.
+
+  // Insufficient funds — check specific messages (not 0x1 which matches anything with that substring)
   if (
-    msg.includes('0x1') ||
-    msg.includes('insufficient funds') ||
-    msg.includes('insufficient lamports')
+    /\binsufficient funds\b/i.test(msg) ||
+    /\binsufficient lamports\b/i.test(msg) ||
+    /\bcustom program error: 0x1\b/.test(msg)  // specific: 0x1 followed by word boundary
   ) {
     return new MammothError(ErrorCode.INVALID_PARAMS, 'Insufficient SOL balance', error);
   }
 
   // Network / RPC errors
-  if (msg.includes('timeout') || msg.includes('network') || msg.includes('fetch failed')) {
+  if (/\btimeout\b/i.test(msg) || /\bnetwork error\b/i.test(msg) || /\bfetch failed\b/i.test(msg)) {
     return new MammothError(ErrorCode.NETWORK_ERROR, 'Network error — please retry', error);
   }
 
-  // Custom program errors — map IDL error codes
-  if (msg.includes('6000') || msg.includes('Unauthorized'))
+  // Helper: match IDL error by hex code (6000 = 0x1770, 6001 = 0x1771, etc.)
+  // Use word-boundary matching on hex and exact error name match.
+  const matchIdlError = (hexCode, name) => {
+    const hexPattern = new RegExp(`\\b0x${hexCode.toString(16)}\\b`, 'i');
+    const namePattern = new RegExp(`\\bError Code: ${name}\\b`);
+    return hexPattern.test(msg) || namePattern.test(msg);
+  };
+
+  if (matchIdlError(0x1770, 'Unauthorized'))
     return new MammothError(ErrorCode.UNAUTHORIZED, 'Not authorized for this instruction', error);
-  if (msg.includes('6001') || msg.includes('HardCapAlreadySet'))
+  if (matchIdlError(0x1771, 'HardCapAlreadySet'))
     return new MammothError(ErrorCode.HARD_CAP_ALREADY_SET, 'Hard cap already set — irreversible', error);
-  if (msg.includes('6002') || msg.includes('NotElasticMode'))
+  if (matchIdlError(0x1772, 'NotElasticMode'))
     return new MammothError(ErrorCode.NOT_ELASTIC_MODE, 'Hard cap only settable in Elastic supply mode', error);
-  if (msg.includes('6003') || msg.includes('NotRightsWindow'))
+  if (matchIdlError(0x1773, 'NotRightsWindow'))
     return new MammothError(ErrorCode.NOT_RIGHTS_WINDOW, 'Cycle is not in Rights Window status', error);
-  if (msg.includes('6004') || msg.includes('RightsWindowExpired'))
+  if (matchIdlError(0x1774, 'RightsWindowExpired'))
     return new MammothError(ErrorCode.RIGHTS_WINDOW_EXPIRED, 'Rights window has expired', error);
-  if (msg.includes('6005') || msg.includes('ExceedsRightsAllocation'))
+  if (matchIdlError(0x1775, 'ExceedsRightsAllocation'))
     return new MammothError(ErrorCode.EXCEEDS_RIGHTS_ALLOCATION, 'Exceeds your rights allocation', error);
-  if (msg.includes('6006') || msg.includes('NotActive'))
+  if (matchIdlError(0x1776, 'NotActive'))
     return new MammothError(ErrorCode.NOT_ACTIVE, 'Cycle is not in Active status', error);
-  if (msg.includes('6007') || msg.includes('SupplyCapExceeded'))
+  if (matchIdlError(0x1777, 'SupplyCapExceeded'))
     return new MammothError(ErrorCode.SUPPLY_CAP_EXCEEDED, 'Cycle supply cap has been reached', error);
-  if (msg.includes('6008') || msg.includes('CycleParamsImmutable'))
+  if (matchIdlError(0x1778, 'CycleParamsImmutable'))
     return new MammothError(ErrorCode.CYCLE_PARAMS_IMMUTABLE, 'Cycle params are immutable once opened', error);
-  if (msg.includes('6009') || msg.includes('ElasticRequiresRights'))
+  if (matchIdlError(0x1779, 'ElasticRequiresRights'))
     return new MammothError(ErrorCode.ELASTIC_REQUIRES_RIGHTS, 'Elastic supply mode requires rights-based issuance', error);
-  if (msg.includes('6010') || msg.includes('MathOverflow'))
+  if (matchIdlError(0x177a, 'MathOverflow'))
     return new MammothError(ErrorCode.MATH_OVERFLOW, 'Arithmetic overflow in on-chain computation', error);
-  if (msg.includes('6011') || msg.includes('NotClosed'))
+  if (matchIdlError(0x177b, 'NotClosed'))
     return new MammothError(ErrorCode.NOT_CLOSED, 'Cycle is not closed', error);
-  if (msg.includes('6012') || msg.includes('ZeroAmount'))
+  if (matchIdlError(0x177c, 'ZeroAmount'))
     return new MammothError(ErrorCode.ZERO_AMOUNT, 'Amount must be greater than zero', error);
-  if (msg.includes('6013') || msg.includes('ZeroStepSize'))
+  if (matchIdlError(0x177d, 'ZeroStepSize'))
     return new MammothError(ErrorCode.ZERO_STEP_SIZE, 'Step size cannot be zero for step curves', error);
-  if (msg.includes('6014') || msg.includes('RightsWindowStillOpen'))
+  if (matchIdlError(0x177e, 'RightsWindowStillOpen'))
     return new MammothError(ErrorCode.RIGHTS_WINDOW_STILL_OPEN, 'Rights window is still open — cannot activate yet', error);
-  if (msg.includes('6015') || msg.includes('LaunchTimeNotReached'))
+  if (matchIdlError(0x177f, 'LaunchTimeNotReached'))
     return new MammothError(ErrorCode.LAUNCH_TIME_NOT_REACHED, 'Scheduled launch time has not been reached yet', error);
+  if (/\bError Code: InvalidCycleProject\b/.test(msg))
+    return new MammothError(ErrorCode.INVALID_CYCLE_PROJECT, 'Cycle does not belong to project', error);
+  if (/\bError Code: InvalidProjectMint\b/.test(msg))
+    return new MammothError(ErrorCode.INVALID_PROJECT_MINT, 'Mint does not match project mint', error);
+  if (/\bError Code: InvalidRightsProject\b/.test(msg))
+    return new MammothError(ErrorCode.INVALID_RIGHTS_PROJECT, 'Rights account does not belong to project', error);
+  if (/\bError Code: InvalidRightsCycle\b/.test(msg))
+    return new MammothError(ErrorCode.INVALID_RIGHTS_CYCLE, 'Rights account cycle does not match active cycle', error);
+  if (/\bError Code: InvalidRightsHolder\b/.test(msg))
+    return new MammothError(ErrorCode.INVALID_RIGHTS_HOLDER, 'Rights account holder does not match signer', error);
 
   return new MammothError(ErrorCode.UNKNOWN, `Transaction failed: ${msg}`, error);
 }

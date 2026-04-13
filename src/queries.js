@@ -8,24 +8,39 @@
 
 'use strict';
 
-const { PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+const { PublicKey } = require('@solana/web3.js');
+const { LAMPORTS_PER_SOL } = require('./constants');
 const { getProjectStatePDA, getCycleStatePDA, getHolderRightsPDA } = require('./pdas');
 const { MammothError, ErrorCode } = require('./errors');
 
 /**
  * Fetch all ProjectState accounts from on-chain.
  *
+ * WARNING: For production deployments with many projects, use an indexer
+ * (Helius, Shyft) instead. This call uses getProgramAccounts which may hit
+ * RPC response size limits (~50MB) at scale.
+ *
  * @param {import('@coral-xyz/anchor').Program} program — Anchor program instance
+ * @param {object} [opts]
+ * @param {number} [opts.limit] — max results to return (default: no limit)
+ * @param {number} [opts.offset=0] — skip first N results
  * @returns {Promise<Array<{publicKey: PublicKey, account: object}>>}
  * @throws {MammothError} on RPC failure
  */
-async function fetchAllProjects(program) {
+async function fetchAllProjects(program, opts = {}) {
   try {
-    return await program.account.projectState.all();
+    const { limit, offset = 0 } = opts;
+    // FIX SDK-13: Support pagination via limit/offset slice.
+    // Note: this still fetches all accounts from RPC; true pagination requires
+    // memcmp filters or an indexer. This at least bounds returned data size.
+    const all = await program.account.projectState.all();
+    const start = offset;
+    const end = limit ? start + limit : all.length;
+    return all.slice(start, end);
   } catch (err) {
     throw new MammothError(
       ErrorCode.NETWORK_ERROR,
-      `Failed to fetch all projects: ${err.message}`,
+      `Failed to fetch all projects: ${err.message}. For production, use an indexer.`,
       err
     );
   }
@@ -98,7 +113,9 @@ async function fetchActiveCycle(program, mintAddress) {
   const project = await fetchProject(program, mintAddress);
   if (!project) return null;
 
-  const currentCycleIndex = project.account.currentCycle;
+  const currentCycleIndex = typeof project.account.currentCycle === 'number'
+    ? project.account.currentCycle
+    : project.account.currentCycle.toNumber();
   if (currentCycleIndex === 0) return null; // No cycles opened yet
 
   const cycleIndex = currentCycleIndex - 1; // currentCycle is 1-based count; last opened is index-1
@@ -172,13 +189,6 @@ async function getBalance(connection, address) {
  * @param {string|PublicKey} mintAddress
  * @returns {Promise<{publicKey: PublicKey, account: object}|null>}
  */
-/**
- * Fetch the AuthorityConfig account for a project.
- *
- * @param {import('@coral-xyz/anchor').Program} program
- * @param {string|PublicKey} mintAddress
- * @returns {Promise<{publicKey: PublicKey, account: object}|null>}
- */
 async function fetchAuthorityConfig(program, mintAddress) {
   try {
     const mint = new PublicKey(mintAddress);
@@ -192,8 +202,21 @@ async function fetchAuthorityConfig(program, mintAddress) {
     );
     const account = await program.account.authorityConfig.fetch(authorityConfigPDA);
     return { publicKey: authorityConfigPDA, account };
-  } catch {
-    return null;
+  } catch (err) {
+    // FIX SDK-21: Only swallow "account does not exist" errors
+    // FIX H-R5-3 (round 6): Legacy accounts predating can_set_merkle_root field will
+    // fail to deserialize. Return null so the client can either re-init or treat as missing.
+    const msg = err?.message || String(err);
+    if (/Account does not exist|Could not find/i.test(msg)) {
+      return null;
+    }
+    if (/Failed to deserialize|AccountDidNotDeserialize|invalid account data|Reached end of buffer|Unexpected length of input|unexpected end/i.test(msg)) {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn(`[mammoth-sdk] AuthorityConfig deserialization failed — likely a legacy account. Run update_authority to migrate.`);
+      }
+      return null;
+    }
+    throw err;
   }
 }
 

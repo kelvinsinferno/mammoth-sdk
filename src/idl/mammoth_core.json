@@ -371,6 +371,10 @@
         {
           "name": "amount",
           "type": "u64"
+        },
+        {
+          "name": "max_sol_cost",
+          "type": "u64"
         }
       ]
     },
@@ -381,7 +385,7 @@
         "Verifies the proof against rights_merkle_root, then creates a HolderRights account.",
         "This replaces the creator-driven create_holder_rights for scale deployments.",
         "",
-        "Leaf hash = keccak256(holder_pubkey || rights_amount_le_bytes)",
+        "Leaf hash = SHA-256(0x00 || holder_pubkey || rights_amount_le_bytes)",
         "",
         "@param proof        Vec of 32-byte sibling hashes from leaf to root",
         "@param rights_amount Amount of rights tokens the holder is claiming"
@@ -1385,6 +1389,10 @@
         {
           "name": "amount",
           "type": "u64"
+        },
+        {
+          "name": "max_sol_cost",
+          "type": "u64"
         }
       ]
     },
@@ -1489,6 +1497,10 @@
         {
           "name": "spending_limit_lamports",
           "type": "u64"
+        },
+        {
+          "name": "can_set_merkle_root",
+          "type": "bool"
         }
       ]
     },
@@ -1825,6 +1837,10 @@
         {
           "name": "holder_count",
           "type": "u32"
+        },
+        {
+          "name": "total_committed",
+          "type": "u64"
         }
       ]
     },
@@ -2269,6 +2285,10 @@
             "type": "u64"
           },
           {
+            "name": "can_set_merkle_root",
+            "type": "bool"
+          },
+          {
             "name": "bump",
             "type": "u8"
           }
@@ -2469,6 +2489,21 @@
                 ]
               }
             }
+          },
+          {
+            "name": "rights_allocated",
+            "docs": ["FIX RA-8: Cumulative rights allocated via claim_rights / create_holder_rights"],
+            "type": "u64"
+          },
+          {
+            "name": "rights_reserved_at_activation",
+            "docs": ["FIX H-R6-2 (round 7): Snapshot of unexercised rights at activation time"],
+            "type": "u64"
+          },
+          {
+            "name": "rights_committed",
+            "docs": ["FIX H-R7-1 (round 8): Total rights committed via Merkle root"],
+            "type": "u64"
           },
           {
             "name": "bump",

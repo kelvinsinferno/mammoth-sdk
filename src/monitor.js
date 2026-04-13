@@ -60,7 +60,7 @@ class MammothMonitor {
   _getProgram() {
     if (this._program) return this._program;
     const walletForProvider = this.wallet || {
-      publicKey: null,
+      publicKey: PublicKey.default, // FIX SDK-20 regression: avoid null publicKey
       signTransaction: async (tx) => tx,
       signAllTransactions: async (txs) => txs,
     };
@@ -178,8 +178,14 @@ class MammothMonitor {
    * @param {number} listenerId
    */
   async removeListener(listenerId) {
-    await this._getProgram().removeEventListener(listenerId);
+    // FIX SDK-23: Remove from our list regardless of whether the underlying
+    // removeEventListener succeeds — prevents double-remove errors on stop().
     this._listeners = this._listeners.filter(id => id !== listenerId);
+    try {
+      await this._getProgram().removeEventListener(listenerId);
+    } catch (err) {
+      // Listener may already be removed or connection closed — safe to ignore
+    }
   }
 
   /**
@@ -187,7 +193,10 @@ class MammothMonitor {
    */
   async stop() {
     const program = this._getProgram();
-    await Promise.all(this._listeners.map(id => program.removeEventListener(id)));
+    // FIX SDK-23: Catch individual removal errors so one failure doesn't leak listeners
+    await Promise.all(this._listeners.map(id =>
+      program.removeEventListener(id).catch(() => null)
+    ));
     this._listeners = [];
   }
 
@@ -209,27 +218,29 @@ class MammothMonitor {
    */
   async getOpenCycles() {
     const program = this._getProgram();
-    const projects = await fetchAllProjects(program);
-    const results = [];
+    // FIX SDK-14: Batch fetch — one RPC call for all cycles instead of N+1
+    const [projects, allCycles] = await Promise.all([
+      fetchAllProjects(program),
+      program.account.cycleState.all(),
+    ]);
 
-    await Promise.all(projects.map(async (p) => {
-      try {
-        const cycle = await fetchActiveCycle(program, p.account.mint.toBase58());
-        if (cycle && cycle.account.status && cycle.account.status.active !== undefined) {
-          results.push({
-            projectMint: p.account.mint.toBase58(),
-            projectState: p.publicKey,
-            cycleState: cycle.publicKey,
-            cycle: cycle.account,
-            project: p.account,
-          });
-        }
-      } catch {
-        // project has no active cycle — skip
-      }
-    }));
+    // Build project lookup by PDA
+    const projectByPda = new Map(projects.map(p => [p.publicKey.toBase58(), p]));
 
-    return results;
+    return allCycles
+      .filter(c => c.account.status && c.account.status.active !== undefined)
+      .map(c => {
+        const project = projectByPda.get(c.account.project.toBase58());
+        if (!project) return null;
+        return {
+          projectMint: project.account.mint.toBase58(),
+          projectState: project.publicKey,
+          cycleState: c.publicKey,
+          cycle: c.account,
+          project: project.account,
+        };
+      })
+      .filter(Boolean);
   }
 
   /**
@@ -243,35 +254,34 @@ class MammothMonitor {
    */
   async getCyclesInRightsWindow() {
     const program = this._getProgram();
-    const projects = await fetchAllProjects(program);
+    // FIX SDK-14: Batch fetch — one RPC call for all cycles
+    const [projects, allCycles] = await Promise.all([
+      fetchAllProjects(program),
+      program.account.cycleState.all(),
+    ]);
     const now = Math.floor(Date.now() / 1000);
-    const results = [];
+    const projectByPda = new Map(projects.map(p => [p.publicKey.toBase58(), p]));
 
-    await Promise.all(projects.map(async (p) => {
-      try {
-        const cycle = await fetchActiveCycle(program, p.account.mint.toBase58());
-        if (
-          cycle &&
-          cycle.account.status &&
-          cycle.account.status.rightsWindow !== undefined &&
-          cycle.account.rightsWindowEnd.toNumber() > now
-        ) {
-          const secondsRemaining = cycle.account.rightsWindowEnd.toNumber() - now;
-          results.push({
-            projectMint: p.account.mint.toBase58(),
-            projectState: p.publicKey,
-            cycleState: cycle.publicKey,
-            cycle: cycle.account,
-            project: p.account,
-            rightsWindowSecondsRemaining: secondsRemaining,
-          });
-        }
-      } catch {
-        // skip
-      }
-    }));
-
-    return results;
+    return allCycles
+      .filter(c =>
+        c.account.status &&
+        c.account.status.rightsWindow !== undefined &&
+        c.account.rightsWindowEnd.toNumber() > now
+      )
+      .map(c => {
+        const project = projectByPda.get(c.account.project.toBase58());
+        if (!project) return null;
+        const secondsRemaining = c.account.rightsWindowEnd.toNumber() - now;
+        return {
+          projectMint: project.account.mint.toBase58(),
+          projectState: project.publicKey,
+          cycleState: c.publicKey,
+          cycle: c.account,
+          project: project.account,
+          rightsWindowSecondsRemaining: secondsRemaining,
+        };
+      })
+      .filter(Boolean);
   }
 
   /**
@@ -302,37 +312,76 @@ class MammothMonitor {
 
     const c = cycle.account;
     const now = Math.floor(Date.now() / 1000);
-    const pctFilled = c.supplyCap.toNumber() > 0
-      ? (c.minted.toNumber() / c.supplyCap.toNumber()) * 100
+
+    // FIX M1 (round 5): Safe BN→number conversion. For values exceeding 2^53,
+    // .toNumber() throws. Fall back to BigInt for precision, then Number for display
+    // (with a warning that precision may be lost).
+    const safeBnToNum = (bn, name) => {
+      if (bn == null) return 0;
+      try {
+        return bn.toNumber();
+      } catch {
+        // Value exceeds Number safe range — use BigInt intermediate then cast
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn(`[mammoth-sdk] ${name} exceeds Number safe range; precision may be lost in snapshot`);
+        }
+        return Number(BigInt(bn.toString()));
+      }
+    };
+
+    const supplyCapN = safeBnToNum(c.supplyCap, 'supplyCap');
+    const mintedN = safeBnToNum(c.minted, 'minted');
+    const basePriceN = safeBnToNum(c.basePrice, 'basePrice');
+    // FIX H2 (round 8): Surface publicCap to bots/UIs so fill alerts fire correctly
+    const rightsReservedN = c.rightsReservedAtActivation
+      ? safeBnToNum(c.rightsReservedAtActivation, 'rightsReservedAtActivation')
+      : 0;
+    const publicCap = Math.max(0, supplyCapN - rightsReservedN);
+    const pctFilled = publicCap > 0
+      ? (mintedN / publicCap) * 100
       : 0;
 
     const statusKey = Object.keys(c.status)[0];
     const curveKey = Object.keys(c.curveType)[0];
 
-    const rightsEnd = c.rightsWindowEnd ? c.rightsWindowEnd.toNumber() : 0;
+    const rightsEnd = c.rightsWindowEnd ? safeBnToNum(c.rightsWindowEnd, 'rightsWindowEnd') : 0;
 
     // Compute current price inline (curve math)
-    let currentPriceLamports = c.basePrice.toNumber();
-    if (curveKey === 'step' && c.stepSize.toNumber() > 0) {
-      const stepNumber = Math.floor(c.minted.toNumber() / c.stepSize.toNumber());
-      currentPriceLamports = c.basePrice.toNumber() + stepNumber * c.stepIncrement.toNumber();
-    } else if (curveKey === 'linear' && c.supplyCap.toNumber() > 0) {
-      const spread = c.endPrice.toNumber() - c.basePrice.toNumber();
-      currentPriceLamports = c.basePrice.toNumber() + Math.floor(spread * c.minted.toNumber() / c.supplyCap.toNumber());
+    let currentPriceLamports = basePriceN;
+    if (curveKey === 'step') {
+      const stepSizeN = safeBnToNum(c.stepSize, 'stepSize');
+      if (stepSizeN > 0) {
+        const stepIncrN = safeBnToNum(c.stepIncrement, 'stepIncrement');
+        const stepNumber = Math.floor(mintedN / stepSizeN);
+        currentPriceLamports = basePriceN + stepNumber * stepIncrN;
+      }
+    } else if (curveKey === 'linear' && supplyCapN > 0) {
+      const endPriceN = safeBnToNum(c.endPrice, 'endPrice');
+      const spread = Math.max(0, endPriceN - basePriceN);
+      currentPriceLamports = basePriceN + Math.floor(spread * mintedN / supplyCapN);
+    } else if (curveKey === 'expLite' && supplyCapN > 0) {
+      const kN = safeBnToNum(c.growthFactorK, 'growthFactorK');
+      const pctConsumed = Math.floor(mintedN * 10000 / supplyCapN);
+      const growth = Math.floor(basePriceN * kN * pctConsumed / 10000 / 10000);
+      currentPriceLamports = basePriceN + growth;
     }
+
+    const solRaisedN = c.solRaised ? safeBnToNum(c.solRaised, 'solRaised') : 0;
 
     return {
       projectMint: mintAddress,
       cycleIndex: c.cycleIndex,
       status: statusKey,
       curveType: curveKey,
-      supplyCap: c.supplyCap.toNumber(),
-      minted: c.minted.toNumber(),
+      supplyCap: supplyCapN,
+      publicCap,             // FIX H2: supplyCap minus rights reservation
+      rightsReserved: rightsReservedN, // FIX H2: visible to bots
+      minted: mintedN,
       pctFilled: Math.round(pctFilled * 100) / 100,
       currentPriceLamports,
       currentPriceSol: currentPriceLamports / 1e9,
-      basePrice: c.basePrice.toNumber(),
-      solRaised: c.solRaised ? c.solRaised.toNumber() / 1e9 : 0,
+      basePrice: basePriceN,
+      solRaised: solRaisedN / 1e9,
       rightsWindowEnd: rightsEnd || null,
       rightsWindowActive: rightsEnd > 0 && rightsEnd > now,
     };
@@ -360,7 +409,9 @@ class MammothMonitor {
     const results = [];
     const now = Math.floor(Date.now() / 1000);
 
-    await Promise.all(projects.map(async (p) => {
+    // FIX M6: Process in chunks of 10 to avoid RPC rate-limit explosion
+    const CHUNK_SIZE = 10;
+    const processProject = async (p) => {
       try {
         const cycle = await fetchActiveCycle(program, p.account.mint.toBase58());
         if (!cycle) return;
@@ -387,10 +438,20 @@ class MammothMonitor {
             snapshot,
           });
         }
-      } catch {
-        // no rights for this project — skip
+      } catch (err) {
+        // FIX SDK-22: Only skip on "account does not exist", rethrow actual errors
+        const msg = err?.message || String(err);
+        if (!/Account does not exist|Could not find/i.test(msg)) {
+          throw err;
+        }
       }
-    }));
+    };
+
+    // Process projects in chunks to limit concurrent RPC calls
+    for (let i = 0; i < projects.length; i += CHUNK_SIZE) {
+      const chunk = projects.slice(i, i + CHUNK_SIZE);
+      await Promise.all(chunk.map(processProject));
+    }
 
     return results;
   }

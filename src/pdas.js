@@ -60,6 +60,10 @@ function getProjectStatePDA(mintPubkey) {
  * @returns {[PublicKey, number]} [pda, bump]
  */
 function getCycleStatePDA(projectStatePda, cycleIndex) {
+  // FIX SDK-5: Validate cycleIndex is a valid u8 — prevents silent PDA collision
+  if (cycleIndex < 0 || cycleIndex > 255 || !Number.isInteger(cycleIndex)) {
+    throw new Error(`cycleIndex must be an integer 0-255, got ${cycleIndex}`);
+  }
   return PublicKey.findProgramAddressSync(
     [Buffer.from('cycle'), projectStatePda.toBuffer(), Buffer.from([cycleIndex])],
     PROGRAM_ID
@@ -112,6 +116,10 @@ function getReservePDA(projectStatePda) {
  * }}
  */
 function resolveAllPDAs(mintPubkey, cycleIndex, holderPubkey = null) {
+  // FIX L7: Validate mintPubkey is a PublicKey
+  if (!mintPubkey || typeof mintPubkey.toBuffer !== 'function') {
+    throw new Error('resolveAllPDAs: mintPubkey must be a PublicKey instance');
+  }
   const [protocolConfig] = getProtocolConfigPDA();
   const [protocolTreasury] = getProtocolTreasuryPDA();
   const [projectState] = getProjectStatePDA(mintPubkey);

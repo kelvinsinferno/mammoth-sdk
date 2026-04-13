@@ -2,8 +2,8 @@
  * merkle.js — Merkle tree utilities for Mammoth rights snapshots
  *
  * Implements the same leaf/node hashing as the on-chain program:
- *   leaf  = keccak256(holder_pubkey_bytes || rights_amount_le_u64)
- *   node  = keccak256(sort(left, right))   ← sorted so position doesn't matter
+ *   leaf  = SHA-256(holder_pubkey_bytes || rights_amount_le_u64)
+ *   node  = SHA-256(sort(left, right))   ← sorted so position doesn't matter
  *
  * Usage:
  *   1. Snapshot SPL token holders: getTokenHolders(connection, mintAddress)
@@ -46,22 +46,32 @@ function hashBytes(...inputs) {
 
 /**
  * Hash a (holder, amount) leaf pair — matches on-chain claim_rights verification.
- * leaf = keccak256(holder_pubkey_32_bytes || rights_amount_8_bytes_le)
+ * leaf = SHA-256(0x00 || holder_pubkey_32_bytes || rights_amount_8_bytes_le)
+ *
+ * FIX H-3 (final audit): Uses 0x00 leaf domain byte to match contract and prevent
+ * second-preimage attacks where a leaf hash could collide with an internal node.
  */
 function hashLeaf(holderPubkey, rightsAmount) {
   const pubkeyBytes = new PublicKey(holderPubkey).toBuffer();        // 32 bytes
+  if (typeof rightsAmount === 'number') {
+    if (!Number.isInteger(rightsAmount) || rightsAmount < 0) {
+      throw new Error(`hashLeaf: rightsAmount must be a non-negative integer, got ${rightsAmount}`);
+    }
+  }
   const amountBytes = Buffer.allocUnsafe(8);
   amountBytes.writeBigUInt64LE(BigInt(rightsAmount));                // 8 bytes LE
-  return hashBytes(pubkeyBytes, amountBytes);
+  return hashBytes(Buffer.from([0x00]), pubkeyBytes, amountBytes);
 }
 
 /**
  * Hash two sibling nodes — sorted so position doesn't matter.
- * node = keccak256(sort(left, right))
+ * node = SHA-256(0x01 || sort(left, right))
+ *
+ * FIX H-3: Uses 0x01 internal-node domain byte to match contract.
  */
 function hashPair(a, b) {
   const [left, right] = Buffer.compare(a, b) <= 0 ? [a, b] : [b, a];
-  return hashBytes(left, right);
+  return hashBytes(Buffer.from([0x01]), left, right);
 }
 
 // ─── Snapshot ────────────────────────────────────────────────────────────────
@@ -71,6 +81,11 @@ function hashPair(a, b) {
  * Returns array of { address: string, balance: bigint } sorted by balance descending.
  *
  * Filters out zero-balance accounts and the protocol treasury.
+ *
+ * WARNING (FIX M4): This uses getProgramAccounts without pagination. For mints with
+ * thousands of holders or on public RPCs with strict limits, results may be truncated
+ * or the call may fail. Use a premium RPC (Helius, QuickNode, Triton) or an indexer
+ * service in production.
  *
  * @param {import('@solana/web3.js').Connection} connection
  * @param {string|import('@solana/web3.js').PublicKey} mintAddress
@@ -141,12 +156,43 @@ function buildRightsTree(holders, cycleAllocation, totalSupply) {
 
   if (total === 0n) throw new Error('buildRightsTree: total supply is zero');
 
-  // Calculate rights amounts and filter out zero-rights holders
-  const entries = holders
-    .map(h => ({
+  // FIX SDK-16: Use largest-remainder method to distribute rounding surplus.
+  // This ensures the sum of rights across all holders equals cycleAllocation
+  // (up to 1 token of rounding per holder), preventing rights from being lost
+  // when many holders have small balances.
+  const raw = holders.map(h => {
+    const product = h.balance * alloc; // BigInt
+    const floor = product / total;     // BigInt floor
+    const remainder = product - floor * total; // BigInt remainder
+    return {
       address: h.address,
       balance: h.balance,
-      rightsAmount: Number((h.balance * alloc) / total),
+      floorAmount: floor,
+      remainder,
+    };
+  });
+
+  // Sum of all floor amounts (BigInt)
+  const allocated = raw.reduce((sum, r) => sum + r.floorAmount, 0n);
+  let surplus = alloc - allocated; // BigInt
+
+  // Sort by remainder descending — biggest remainders get +1 until surplus is exhausted.
+  // FIX M5: Tiebreak by address (ascending) for deterministic trees across runs.
+  raw.sort((a, b) => {
+    if (b.remainder > a.remainder) return 1;
+    if (b.remainder < a.remainder) return -1;
+    return a.address < b.address ? -1 : a.address > b.address ? 1 : 0;
+  });
+  for (let i = 0; i < raw.length && surplus > 0n; i++) {
+    raw[i].floorAmount += 1n;
+    surplus -= 1n;
+  }
+
+  const entries = raw
+    .map(r => ({
+      address: r.address,
+      balance: r.balance,
+      rightsAmount: Number(r.floorAmount),
     }))
     .filter(e => e.rightsAmount > 0)
     .map(e => ({
@@ -168,7 +214,16 @@ class MerkleRightsTree {
   constructor(entries) {
     this.entries = entries;
     this._addressMap = new Map(entries.map((e, i) => [e.address, i]));
-    this._layers = this._buildLayers(entries.map(e => e.leaf));
+    // FIX C3 (round 10): Expose totalCommitted for set_rights_merkle_root instruction.
+    // Must pass this to the contract so rights_committed matches the tree exactly,
+    // preventing rights over-commit and matching public_cap calculations.
+    this.totalCommitted = entries.reduce((sum, e) => sum + BigInt(e.rightsAmount), 0n);
+    // FIX C1 (revert of SDK-17): Contract's claim_rights verifier does
+    // `proof.iter().fold(leaf, ...) == root`. For a single-entry tree, an empty
+    // proof reduces to `leaf == root`. So for single entries, root = leaf with no proof.
+    // Do NOT pad with zero leaves — that would produce a different root the contract can't verify.
+    const leaves = entries.map(e => e.leaf);
+    this._layers = this._buildLayers(leaves);
     this.root = this._layers[this._layers.length - 1][0];
   }
 
@@ -228,6 +283,11 @@ class MerkleRightsTree {
 
   /**
    * Verify a proof client-side (same logic as on-chain).
+   *
+   * NOTE (FIX L3): This trusts the `amount` argument. For authoritative verification,
+   * always check the rightsAmount from the tree's own entries (via getAmount()) rather
+   * than user-supplied data. This method is safe for cross-checking proof integrity but
+   * should not be used as an authorization gate against tampered amounts.
    *
    * @param {string} address
    * @param {number} amount

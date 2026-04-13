@@ -15,23 +15,25 @@
   "author": "Kelvinsinferno Studio",
   "license": "MIT",
   "peerDependencies": {
-    "@coral-xyz/anchor": "^0.30",
+    "@coral-xyz/anchor": "^0.31.1",
     "@solana/web3.js": "^1.95",
     "@solana/spl-token": "^0.4"
   },
   "devDependencies": {
-    "@coral-xyz/anchor": "^0.30.1",
+    "@coral-xyz/anchor": "^0.31.1",
     "@solana/web3.js": "^1.95.3",
     "@solana/spl-token": "^0.4.9"
   },
   "engines": {
     "node": ">=18.0.0"
   },
+  "scripts": {
+    "test": "node ./test-sdk.js"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/kelvinsinferno/mammoth-sdk.git"
   },
-  "homepage": "https://mammoth-protocol.vercel.app",
   "bugs": {
     "url": "https://github.com/kelvinsinferno/mammoth-sdk/issues"
   },

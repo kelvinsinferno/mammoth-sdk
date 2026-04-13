@@ -191,9 +191,13 @@ Compute current token price in SOL from a cycle state object. Pure function — 
 
 Compute buy quote for a given SOL amount. Returns `{ tokensOut, effectivePrice, fee, newPrice, nextStepIn, remainingAfter }`. Pure function.
 
-#### `client.checkOperatorPermission(mintAddress, operatorAddress, instruction)` → `boolean`
+#### `client.checkOperatorPermission(mintAddress, operatorAddress, instruction)` → `{ allowed, reason }`
 
-> ⚠️ **STUB** — Requires TASK-AI-004 AuthorityConfig implementation. Currently always returns `true`. Will enforce on-chain permission bitmap once AuthorityConfig is deployed.
+Performs a live on-chain fetch of `AuthorityConfig` and returns:
+- `allowed: boolean`
+- `reason: string`
+
+If no authority config exists, it returns `{ allowed: false, reason: 'OperatorNotRegistered' }`.
 
 ---
 
@@ -213,10 +217,9 @@ async function agentLaunchProject(agentWallet, projectConfig) {
   console.log('[agent] Creating project:', projectConfig.name);
 
   // Step 1: Check the agent has permission to create projects
-  // (Full permission check requires TASK-AI-004 AuthorityConfig)
-  const hasPermission = await client.checkOperatorPermission(null, agentWallet.publicKey, 'createProject');
-  if (!hasPermission) {
-    throw new Error('[agent] Insufficient authority to create project. Escalating to principal.');
+  const permission = await client.checkOperatorPermission(null, agentWallet.publicKey, 'createProject');
+  if (!permission.allowed) {
+    throw new Error(`[agent] Insufficient authority to create project. Reason: ${permission.reason}`);
   }
 
   // Step 2: Deploy the project on-chain
@@ -259,10 +262,10 @@ async function agentOpenCycle(agentWallet, mintAddress, cycleParams) {
   console.log('[agent] Opening Cycle', project.currentCycle + 1);
 
   // Step 2: Check permission to open cycles
-  const hasPermission = await client.checkOperatorPermission(mintAddress, agentWallet.publicKey, 'openCycle');
-  if (!hasPermission) {
+  const permission = await client.checkOperatorPermission(mintAddress, agentWallet.publicKey, 'openCycle');
+  if (!permission.allowed) {
     // Agent must escalate — cannot proceed autonomously
-    return { success: false, escalate: true, reason: 'InsufficientAuthority:openCycle' };
+    return { success: false, escalate: true, reason: permission.reason || 'InsufficientAuthority:openCycle' };
   }
 
   // Step 3: Open the cycle
@@ -318,9 +321,9 @@ async function agentMonitorCycle(agentWallet, mintAddress, closingThreshold = 0.
       console.log(`[agent] Threshold reached (${(closingThreshold * 100)}%). Closing cycle.`);
 
       // Check permission before acting
-      const hasPermission = await client.checkOperatorPermission(mintAddress, agentWallet.publicKey, 'closeCycle');
-      if (!hasPermission) {
-        return { success: false, escalate: true, reason: 'InsufficientAuthority:closeCycle' };
+      const permission = await client.checkOperatorPermission(mintAddress, agentWallet.publicKey, 'closeCycle');
+      if (!permission.allowed) {
+        return { success: false, escalate: true, reason: permission.reason || 'InsufficientAuthority:closeCycle' };
       }
 
       const { signature } = await client.closeCycle(mintAddress);
@@ -345,20 +348,20 @@ async function agentCheckAndAct(agentWallet, mintAddress, action, params) {
   const client = new MammothClient({ connection, wallet: agentWallet });
 
   // Always check permission before irreversible or high-impact actions
-  const hasPermission = await client.checkOperatorPermission(
+  const permission = await client.checkOperatorPermission(
     mintAddress,
     agentWallet.publicKey,
     action
   );
 
-  if (!hasPermission) {
+  if (!permission.allowed) {
     // Agent cannot proceed — must report back to its principal
     console.warn(`[agent] No permission for '${action}'. Reporting to principal.`);
     return {
       success: false,
       escalate: true,
       action,
-      reason: `InsufficientAuthority: operator not permitted to call '${action}' on ${mintAddress}`,
+      reason: permission.reason || `InsufficientAuthority: operator not permitted to call '${action}' on ${mintAddress}`,
       requestedBy: agentWallet.publicKey.toBase58(),
     };
   }
@@ -438,18 +441,20 @@ console.log(MAINNET_RPC);  // https://api.mainnet-beta.solana.com
 
 ---
 
-## Authority Delegation (Coming: TASK-AI-004)
+## Authority Delegation
 
-The `checkOperatorPermission` method is currently a stub. The full **AuthorityConfig** system — on-chain permission delegation for AI agents — is being implemented in TASK-AI-004.
+The SDK now performs a live on-chain `AuthorityConfig` lookup when calling `checkOperatorPermission`.
 
-When complete, it will allow a **principal** (human wallet, DAO, or AI controller) to configure exactly what operations an **operator** (AI agent wallet) can perform autonomously:
+Important caveat: this depends on the deployed contract + IDL + authority accounts actually being aligned in the target environment. If authority config has not been initialized or the target deployment predates the feature, permission checks can return `OperatorNotRegistered` or fail closed.
+
+The full **AuthorityConfig** system allows a **principal** (human wallet, DAO, or AI controller) to configure exactly what operations an **operator** (AI agent wallet) can perform autonomously:
 
 - `can_open_cycle` — agent can open cycles without approval
 - `can_close_cycle` — agent can close cycles autonomously
 - `can_set_hard_cap` — agent can set hard cap (off by default — must be explicitly granted)
 - `spending_limit` — max SOL raise per cycle before escalation required
 
-Until TASK-AI-004 is deployed, `checkOperatorPermission` returns `true` for all calls.
+Use `checkOperatorPermission` conservatively in automation: treat any failure, missing config, or unknown response as deny-by-default until the deployment state is confirmed.
 
 ---
 

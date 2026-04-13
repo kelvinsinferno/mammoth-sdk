@@ -23,7 +23,7 @@ const { MammothClient } = require('./client');
 const { MammothMonitor } = require('./monitor');
 
 // ─── Merkle (rights snapshot + proof generation) ──────────────────────────────
-const { getTokenHolders, buildRightsTree, hashLeaf, hashPair, MammothMonitor: _m, MerkleRightsTree } = require('./merkle');
+// FIX SDK-10: Remove bogus MammothMonitor import from merkle module
 const merkleExports = require('./merkle');
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
@@ -73,6 +73,10 @@ const {
   buyTokens,
   exerciseRights,
   activateCycle,
+  initializeAuthority,
+  updateAuthority,
+  setRightsMerkleRoot,
+  rotateCreator,
 } = require('./instructions');
 
 // ─── Query helpers ────────────────────────────────────────────────────────────
@@ -83,6 +87,7 @@ const {
   fetchActiveCycle,
   fetchHolderRights,
   getBalance,
+  fetchAuthorityConfig,
 } = require('./queries');
 
 // ─── IDL ──────────────────────────────────────────────────────────────────────
@@ -140,6 +145,10 @@ module.exports = {
   buyTokens,
   exerciseRights,
   activateCycle,
+  initializeAuthority,
+  updateAuthority,
+  setRightsMerkleRoot,
+  rotateCreator,
 
   // Queries
   fetchAllProjects,
@@ -148,6 +157,7 @@ module.exports = {
   fetchActiveCycle,
   fetchHolderRights,
   getBalance,
+  fetchAuthorityConfig,
 
   // IDL (for custom Anchor integrations)
   IDL,

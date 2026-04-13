@@ -32,7 +32,25 @@ function lamportsToSol(lamports) {
  * @returns {number}
  */
 function solToLamports(sol) {
-  return Math.floor(sol * LAMPORTS_PER_SOL);
+  // FIX M2: Validate input before conversion
+  if (typeof sol !== 'number' || !Number.isFinite(sol) || sol < 0) {
+    throw new Error(`solToLamports: sol must be a non-negative finite number, got ${sol}`);
+  }
+  // FIX SDK-9: Use Math.round to handle float representation edge cases
+  // e.g., 0.1 * 1e9 = 100000000.00000001 — floor would lose 1 lamport
+  return Math.round(sol * LAMPORTS_PER_SOL);
+}
+
+// FIX M1 (round 10): Module-level BN→Number helper with precision warning.
+// Used by computePrice and computeBuyQuote for u64 fields that may exceed 2^53.
+function _toSafeNumber(v, name) {
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) && typeof v !== 'number') {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(`[mammoth-sdk] ${name}=${v} exceeds Number.MAX_SAFE_INTEGER; curve math may lose precision`);
+    }
+  }
+  return n;
 }
 
 // ─── Price computation ────────────────────────────────────────────────────────
@@ -50,6 +68,7 @@ function solToLamports(sol) {
  * @param {number|bigint} cycleState.supplyCap — total cycle supply cap
  * @param {number|bigint} [cycleState.endPrice] — lamports, for linear curve
  * @param {number|bigint} [cycleState.growthFactorK] — k * 1000, for expLite curve
+ * @param {number|bigint} [cycleState.rightsReservedAtActivation] — (used by computeBuyQuote) tokens reserved from public buyers; snapshotted at activation
  * @returns {number} current price in SOL
  */
 function computePrice(cycleState) {
@@ -66,9 +85,10 @@ function computePrice(cycleState) {
     growthFactorK,
   } = cycleState;
 
+  // FIX H1/H2: Precision warning on large u64 values (uses module-level _toSafeNumber)
   const basePriceSol = lamportsToSol(basePrice);
-  const mintedN = Number(minted);
-  const supplyCapN = Number(supplyCap);
+  const mintedN = _toSafeNumber(minted, 'minted');
+  const supplyCapN = _toSafeNumber(supplyCap, 'supplyCap');
 
   if (curveType.step !== undefined) {
     const stepSizeN = Number(stepSize);
@@ -80,13 +100,22 @@ function computePrice(cycleState) {
   if (curveType.linear !== undefined) {
     const endPriceSol = lamportsToSol(endPrice || 0);
     const t = supplyCapN > 0 ? mintedN / supplyCapN : 0;
-    return basePriceSol + (endPriceSol - basePriceSol) * t;
+    // FIX L6: Match contract's saturating_sub — spread clamped to 0 if end < base
+    const spread = Math.max(0, endPriceSol - basePriceSol);
+    return basePriceSol + spread * t;
   }
 
   if (curveType.expLite !== undefined) {
-    const k = Number(growthFactorK || 0) / 1000; // stored as k*1000 on-chain
-    const t = supplyCapN > 0 ? mintedN / supplyCapN : 0;
-    return basePriceSol * Math.exp(k * t);
+    // FIX (post re-audit): Match the contract's actual formula — NOT true exp.
+    // Contract: pct_consumed = minted * 10000 / supply_cap
+    //           price = base + (base * k * pct_consumed / 10000 / 10000)
+    // k is stored as a raw u64 (not multiplied), so we use it directly.
+    if (supplyCapN === 0) return basePriceSol;
+    const k = Number(growthFactorK || 0);
+    const basePriceLamports = Number(basePrice);
+    const pctConsumed = Math.floor(mintedN * 10000 / supplyCapN);
+    const growth = Math.floor(basePriceLamports * k * pctConsumed / 10000 / 10000);
+    return lamportsToSol(basePriceLamports + growth);
   }
 
   // Fallback for unknown curve types
@@ -124,27 +153,62 @@ function computeBuyQuote(cycleState, solIn, feeBps = 200) {
     supplyCap,
   } = cycleState;
 
-  const fee = solIn * (feeBps / 10000);
-  let budget = solIn - fee;
+  // FIX M4 (round 5): Match contract's fee-on-cost semantics.
+  // Contract: total_cost = compute_total_cost(amount); fee = total_cost * feeBps / 10000;
+  //           user pays total_cost (fee + net_cost carved out from that).
+  // So user's full solIn covers total_cost. We find max amount where total_cost(amount) <= solIn.
+  // Fee displayed = total_cost * feeBps / 10000 (computed post-binary-search).
+  const solInLamports = Math.round(solIn * LAMPORTS_PER_SOL);
+  let budget = solIn; // full amount — fee is inside total_cost on-chain
+  // fee and feeLamports computed after we know total cost
+  let feeLamports = 0;
+  let fee = 0;
 
   const basePriceSol = lamportsToSol(basePrice);
   const stepSizeN = Number(stepSize);
   const stepIncrSol = lamportsToSol(stepIncrement);
   const mintedN = Number(minted);
   const supplyCapN = Number(supplyCap);
-  const remaining = supplyCapN - mintedN;
+
+  // FIX C1 (round 8): Use rightsReservedAtActivation (snapshotted) instead of
+  // rightsAllocated (cumulative). Contract now freezes reservation at activate_cycle.
+  // Previous formula (supplyCap - max(0, rightsAllocated - minted)) eroded as public
+  // buys grew minted. The snapshot is constant post-activation and matches on-chain.
+  // FIX M8-1 (round 9): Remove legacy rightsAllocated fallback. That field is
+  // cumulative (grows with claims), NOT a reservation. Using it would re-introduce
+  // the erosion bug. Default to 0 if field absent (pre-activation state).
+  // FIX M1 (round 10): Use _toSafeNumber with precision warning on u64 fields.
+  // FIX H3 (round 10): Robust enum variant check — use `in` operator instead of Object.keys[0].
+  let statusKey = null;
+  if (cycleState.status) {
+    if ('active' in cycleState.status) statusKey = 'active';
+    else if ('closed' in cycleState.status) statusKey = 'closed';
+    else if ('rightsWindow' in cycleState.status) statusKey = 'rightsWindow';
+    else if ('pending' in cycleState.status) statusKey = 'pending';
+  }
+  let rightsReservedN = 0;
+  if (statusKey === 'active' || statusKey === 'closed') {
+    rightsReservedN = cycleState.rightsReservedAtActivation != null
+      ? _toSafeNumber(cycleState.rightsReservedAtActivation, 'rightsReservedAtActivation') : 0;
+  } else if (statusKey === 'rightsWindow') {
+    // Pre-activation: use total Merkle commitment if set (upper bound on reservation)
+    rightsReservedN = cycleState.rightsCommitted != null
+      ? _toSafeNumber(cycleState.rightsCommitted, 'rightsCommitted') : 0;
+  }
+  const publicCap = Math.max(0, supplyCapN - rightsReservedN);
+  const remaining = Math.max(0, publicCap - mintedN);
 
   // ── Step curve: walk through step boundaries ──────────────────────────────
   if (curveType?.step !== undefined && stepSizeN > 0) {
     let tokensSold = mintedN;
     let tokensOut = 0;
 
-    while (budget > 0 && tokensSold < supplyCapN) {
+    while (budget > 0 && tokensSold < publicCap) {
       const stepIndex = Math.floor(tokensSold / stepSizeN);
       const priceNow = basePriceSol + stepIndex * stepIncrSol;
       const tokensThisStep = Math.min(
         stepSizeN - (tokensSold % stepSizeN),
-        supplyCapN - tokensSold
+        publicCap - tokensSold
       );
       const costForStep = tokensThisStep * priceNow;
 
@@ -154,13 +218,21 @@ function computeBuyQuote(cycleState, solIn, feeBps = 200) {
         tokensOut += tokensThisStep;
       } else {
         const partial = Math.floor(budget / priceNow);
+        // FIX SDK-15: Track actual spend so effectivePrice is accurate
+        budget -= partial * priceNow;
         tokensOut += partial;
         tokensSold += partial;
-        budget = 0;
+        break; // out of budget
       }
     }
 
-    const effectivePrice = tokensOut > 0 ? (solIn - fee) / tokensOut : basePriceSol;
+    // FIX M4 (round 5) / M-R5-1 (round 6): Compute total_cost in SOL, convert to lamports
+    // once to avoid repeated float rounding. Fee math now fully integer like other branches.
+    const totalCost = solIn - budget;
+    const totalCostLamports = Math.round(totalCost * LAMPORTS_PER_SOL);
+    feeLamports = Math.floor(totalCostLamports * feeBps / 10000);
+    fee = feeLamports / LAMPORTS_PER_SOL;
+    const effectivePrice = tokensOut > 0 ? totalCost / tokensOut : basePriceSol;
     const newMinted = mintedN + tokensOut;
     const newStepIndex = stepSizeN > 0 ? Math.floor(newMinted / stepSizeN) : 0;
     const newPrice = basePriceSol + newStepIndex * stepIncrSol;
@@ -177,10 +249,141 @@ function computeBuyQuote(cycleState, solIn, feeBps = 200) {
     };
   }
 
-  // ── Linear / ExpLite: use approximate average price ───────────────────────
+  // ── Linear curve: walk BPS buckets matching contract's compute_total_cost ──
+  if (curveType?.linear !== undefined) {
+    if (supplyCapN === 0) return null;
+    const basePriceL = Number(basePrice);
+    const endPriceL = Number(cycleState.endPrice || 0);
+    // FIX L6: Match contract's saturating_sub
+    const spread = Math.max(0, endPriceL - basePriceL);
+
+    // FIX H-R4-2 (final audit): Replicate contract's compute_total_cost bucket walk.
+    // Price is piecewise-constant across BPS buckets of size supplyCap/10000.
+    const priceAtLamports = (sold) => {
+      return basePriceL + Math.floor(spread * sold / supplyCapN);
+    };
+    const costFor = (nTokens) => {
+      if (nTokens <= 0) return 0;
+      let sold = mintedN;
+      const endSold = mintedN + nTokens;
+      let total = 0;
+      while (sold < endSold) {
+        const price = priceAtLamports(sold);
+        const pctConsumed = Math.floor(sold * 10000 / supplyCapN);
+        const nextPct = pctConsumed + 1;
+        const nextBoundary = Math.min(
+          Math.ceil(nextPct * supplyCapN / 10000),
+          supplyCapN
+        );
+        const tokensInBucket = Math.max(1, Math.min(endSold, nextBoundary) - sold);
+        total += price * tokensInBucket;
+        sold += tokensInBucket;
+      }
+      return total;
+    };
+
+    const budgetLamports = Math.floor(budget * LAMPORTS_PER_SOL);
+
+    let lo = 0, hi = remaining;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (costFor(mid) <= budgetLamports) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    const tokensOut = lo;
+    const spentLamports = costFor(tokensOut);
+
+    // FIX M4 (round 5): Compute fee from total_cost (matches contract)
+    feeLamports = Math.floor(spentLamports * feeBps / 10000);
+    fee = feeLamports / LAMPORTS_PER_SOL;
+
+    const effectivePrice = tokensOut > 0
+      ? (spentLamports / LAMPORTS_PER_SOL) / tokensOut
+      : basePriceSol;
+    const newPrice = priceAtLamports(mintedN + tokensOut) / LAMPORTS_PER_SOL;
+
+    return {
+      tokensOut,
+      effectivePrice,
+      fee,
+      newPrice,
+      nextStepIn: null,
+      remainingAfter: remaining - tokensOut,
+      soldAfter: mintedN + tokensOut,
+    };
+  }
+
+  // ── ExpLite curve: bucket-by-bucket integration matching contract ─────
+  if (curveType?.expLite !== undefined) {
+    if (supplyCapN === 0) return null;
+    const k = Number(cycleState.growthFactorK || 0);
+    const basePriceLamports = Number(basePrice);
+
+    // Contract formula: price(sold) = base + floor(base*k*floor(sold*10000/cap)/10000/10000)
+    // Price is piecewise-constant across BPS buckets of size floor(supplyCap/10000).
+    // FIX C2: Walk bucket-by-bucket, summing exact lamport cost. This mirrors
+    // the contract's actual behavior and avoids midpoint underestimation.
+    const priceAtLamports = (sold) => {
+      const pct = Math.floor(sold * 10000 / supplyCapN);
+      const growth = Math.floor(basePriceLamports * k * pct / 10000 / 10000);
+      return basePriceLamports + growth;
+    };
+
+    const budgetLamports = Math.floor(budget * LAMPORTS_PER_SOL);
+    let sold = mintedN;
+    let tokensOut = 0;
+    let spentLamports = 0;
+    let remainingBudget = budgetLamports;
+
+    // FIX H-R6-3 (round 7): Use publicCap as upper bound (H-2 rights reservation).
+    // Previously used supplyCapN, letting buyers consume tokens reserved for rights.
+    while (sold < publicCap && remainingBudget > 0) {
+      const priceL = priceAtLamports(sold);
+      if (priceL <= 0) break;
+      // Find end of current BPS bucket — next boundary where price changes
+      const currentPct = Math.floor(sold * 10000 / supplyCapN);
+      // Next BPS boundary: ceil((currentPct+1) * supplyCap / 10000)
+      const nextBoundary = Math.min(
+        Math.ceil((currentPct + 1) * supplyCapN / 10000),
+        publicCap  // Clamp to publicCap instead of supplyCapN
+      );
+      const tokensAvail = nextBoundary - sold;
+      const maxAtThisPrice = Math.floor(remainingBudget / priceL);
+      const buyHere = Math.min(tokensAvail, maxAtThisPrice);
+      if (buyHere <= 0) break;
+      sold += buyHere;
+      tokensOut += buyHere;
+      const costHere = buyHere * priceL;
+      spentLamports += costHere;
+      remainingBudget -= costHere;
+    }
+
+    // FIX M4 (round 5): Fee from total_cost
+    feeLamports = Math.floor(spentLamports * feeBps / 10000);
+    fee = feeLamports / LAMPORTS_PER_SOL;
+
+    const effectivePrice = tokensOut > 0
+      ? (spentLamports / LAMPORTS_PER_SOL) / tokensOut
+      : basePriceSol;
+    const newPrice = priceAtLamports(mintedN + tokensOut) / LAMPORTS_PER_SOL;
+
+    return {
+      tokensOut,
+      effectivePrice,
+      fee,
+      newPrice,
+      nextStepIn: null,
+      remainingAfter: remaining - tokensOut,
+      soldAfter: mintedN + tokensOut,
+    };
+  }
+
+  // ── Fallback for unknown curve types ──────────────────────────────────
   const currentPrice = computePrice(cycleState);
   if (currentPrice <= 0) return null;
-
   const tokensOut = Math.min(Math.floor(budget / currentPrice), remaining);
 
   return {
@@ -226,17 +429,21 @@ function linearCurvePriceAt({ sold, supplyCap, startPrice, endPrice }) {
 
 /**
  * Compute the ExpLite curve price at a specific sold quantity (offline).
+ * Matches the on-chain contract's formula (BPS-linear, not true exponential).
  *
  * @param {object} params
  * @param {number} params.sold — tokens already sold
  * @param {number} params.supplyCap — total cycle supply cap
  * @param {number} params.startPrice — base price in SOL
- * @param {number} params.growthFactorK — k value (not multiplied by 1000 here — pass real k e.g. 2.5)
+ * @param {number} params.growthFactorK — raw k value as stored on-chain
  * @returns {number} price in SOL
  */
 function expLiteCurvePriceAt({ sold, supplyCap, startPrice, growthFactorK }) {
-  const t = supplyCap > 0 ? sold / supplyCap : 0;
-  return startPrice * Math.exp(growthFactorK * t);
+  if (supplyCap <= 0) return startPrice;
+  // Match contract: price = base + base * k * pct_bps / 10000 / 10000
+  const pctBps = Math.floor(sold * 10000 / supplyCap);
+  const growthFactor = growthFactorK * pctBps / 10000 / 10000;
+  return startPrice * (1 + growthFactor);
 }
 
 module.exports = {

@@ -13,10 +13,8 @@
 
 'use strict';
 
-const { Connection } = require('@solana/web3.js');
+const { PublicKey } = require('@solana/web3.js');
 const { Program, AnchorProvider } = require('@coral-xyz/anchor');
-
-const { PROGRAM_ID, DEVNET_RPC, MAINNET_RPC } = require('./constants');
 const { MammothError, ErrorCode } = require('./errors');
 const { computePrice, computeBuyQuote } = require('./curves');
 const instructions = require('./instructions');
@@ -68,9 +66,16 @@ class MammothClient {
       );
     }
 
-    // Use a read-only wallet stub if no wallet is configured (queries only)
+    // FIX SDK-7: Cache Program instance — avoid rebuilding on every call.
+    // Cache is invalidated when wallet changes via setWallet().
+    const cacheKey = this.wallet ? 'with-wallet' : 'read-only';
+    if (this._programCache && this._programCacheKey === cacheKey) {
+      return this._programCache;
+    }
+
+    // FIX SDK-20: Use PublicKey.default instead of null for read-only wallet stub
     const walletForProvider = this.wallet || {
-      publicKey: null,
+      publicKey: PublicKey.default,
       signTransaction: async (tx) => tx,
       signAllTransactions: async (txs) => txs,
     };
@@ -82,7 +87,19 @@ class MammothClient {
     );
 
     // Anchor 0.30+: new Program(idl, provider) — programId comes from idl.address
-    return new Program(IDL, provider);
+    this._programCache = new Program(IDL, provider);
+    this._programCacheKey = cacheKey;
+    return this._programCache;
+  }
+
+  /**
+   * Update the wallet on an existing client instance.
+   * Invalidates the program cache.
+   */
+  setWallet(wallet) {
+    this.wallet = wallet;
+    this._programCache = null;
+    this._programCacheKey = null;
   }
 
   // ─── Project lifecycle ────────────────────────────────────────────────────
@@ -114,7 +131,18 @@ class MammothClient {
       ai_assisted: { aiAssisted: {} },
       ai_autonomous: { aiAutonomous: {} },
     };
-    const operatorTypeObj = operatorTypeMap[params.operatorType] || { human: {} };
+    // FIX M3: Throw on unknown operatorType instead of silent fallback
+    let operatorTypeObj;
+    if (params.operatorType === undefined) {
+      operatorTypeObj = { human: {} };
+    } else if (operatorTypeMap[params.operatorType]) {
+      operatorTypeObj = operatorTypeMap[params.operatorType];
+    } else {
+      throw new MammothError(
+        ErrorCode.INVALID_PARAMS,
+        `Unknown operatorType: ${params.operatorType}. Expected one of: human, ai_assisted, ai_autonomous`
+      );
+    }
 
     return instructions.createProject(program, {
       ...params,
@@ -176,12 +204,20 @@ class MammothClient {
    *
    * @param {string|import('@solana/web3.js').PublicKey} mintAddress
    * @param {number} amount — token amount to buy (base units, 6 decimals)
+   * @param {number|BN} [maxSolCost] — STRONGLY RECOMMENDED: Maximum lamports the
+   *   tx is allowed to cost. Computed on-chain against the integrated curve cost.
+   *   Tx reverts with SlippageExceeded if actual cost exceeds this. Omitting this
+   *   param disables slippage protection (u64::MAX) — an agent or bot could
+   *   overspend during adverse price movement or front-running.
    * @returns {Promise<{tx: string, amount: number}>}
    * @throws {MammothError}
    */
-  async buyTokens(mintAddress, amount) {
+  async buyTokens(mintAddress, amount, maxSolCost) {
+    if (maxSolCost == null && typeof console !== 'undefined' && console.warn) {
+      console.warn('[mammoth-sdk] buyTokens called without maxSolCost — slippage protection disabled. Pass maxSolCost (lamports) to bound spend on-chain.');
+    }
     const program = this._getProgram(true);
-    return instructions.buyTokens(program, mintAddress, amount);
+    return instructions.buyTokens(program, mintAddress, amount, maxSolCost);
   }
 
   /**
@@ -189,12 +225,17 @@ class MammothClient {
    *
    * @param {string|import('@solana/web3.js').PublicKey} mintAddress
    * @param {number} amount — token amount to exercise (base units)
+   * @param {number|BN} [maxSolCost] — STRONGLY RECOMMENDED: Maximum lamports the
+   *   tx is allowed to cost. See buyTokens for details.
    * @returns {Promise<{tx: string, amount: number}>}
    * @throws {MammothError}
    */
-  async exerciseRights(mintAddress, amount) {
+  async exerciseRights(mintAddress, amount, maxSolCost) {
+    if (maxSolCost == null && typeof console !== 'undefined' && console.warn) {
+      console.warn('[mammoth-sdk] exerciseRights called without maxSolCost — slippage protection disabled.');
+    }
     const program = this._getProgram(true);
-    return instructions.exerciseRights(program, mintAddress, amount);
+    return instructions.exerciseRights(program, mintAddress, amount, maxSolCost);
   }
 
   // ─── Queries (no wallet required) ────────────────────────────────────────
@@ -249,7 +290,11 @@ class MammothClient {
     // Fetch active cycle index first
     const project = await queries.fetchProject(program, mintAddress);
     if (!project) return null;
-    const cycleIndex = project.account.currentCycle - 1;
+    // FIX H5: Handle BN vs number for currentCycle
+    const _cc = typeof project.account.currentCycle === 'number'
+      ? project.account.currentCycle
+      : project.account.currentCycle.toNumber();
+    const cycleIndex = _cc - 1;
     if (cycleIndex < 0) return null;
     return queries.fetchHolderRights(program, mintAddress, cycleIndex, holderAddress);
   }
@@ -296,23 +341,6 @@ class MammothClient {
     return computeBuyQuote(cycleState, solIn, feeBps);
   }
 
-  /**
-   * Check whether an operator address has permission to execute a given instruction.
-   *
-   * ⚠️ STUB — Requires TASK-AI-004 AuthorityConfig implementation.
-   * This method is intentionally included so agents can discover the interface now.
-   * It currently always returns { allowed: false, reason: 'not-implemented' }.
-   *
-   * When TASK-AI-004 is complete, this will:
-   * - Fetch the AuthorityConfig PDA for the mint
-   * - Check the operator's permission set against the requested instruction
-   * - Return { allowed: boolean, reason: string }
-   *
-   * @param {string|import('@solana/web3.js').PublicKey} mintAddress
-   * @param {string|import('@solana/web3.js').PublicKey} operatorAddress
-   * @param {string} instruction — instruction name (e.g. 'openCycle', 'closeCycle', 'buyTokens')
-   * @returns {{ allowed: boolean, reason: string }}
-   */
   /**
    * Check whether an operator address has permission to execute a given instruction.
    * Performs a live on-chain fetch of the AuthorityConfig PDA.

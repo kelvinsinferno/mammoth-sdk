@@ -16,7 +16,6 @@ const { BN } = require('@coral-xyz/anchor');
 const {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
-  getAssociatedTokenAddress,
   getAssociatedTokenAddressSync,
 } = require('@solana/spl-token');
 const {
@@ -59,11 +58,23 @@ async function createProject(program, params) {
       reserveBps,
       sinkBps,
       launchAt = null,
+      operatorType = { human: {} }, // FIX SDK-6: Pass operatorType to on-chain instruction
       mintKeypair: providedMintKeypair,
     } = params;
 
     if (!totalSupply) {
       throw new MammothError(ErrorCode.INVALID_PARAMS, 'totalSupply is required');
+    }
+
+    // FIX SDK-12: Validate BPS sums client-side — matches on-chain validation
+    if (creatorBps + reserveBps + sinkBps !== 10000) {
+      throw new MammothError(
+        ErrorCode.INVALID_PARAMS,
+        `creatorBps + reserveBps + sinkBps must sum to 10000, got ${creatorBps + reserveBps + sinkBps}`
+      );
+    }
+    if (publicAllocationBps < 0 || publicAllocationBps > 10000) {
+      throw new MammothError(ErrorCode.INVALID_PARAMS, 'publicAllocationBps must be 0-10000');
     }
 
     const mintKeypair = providedMintKeypair || Keypair.generate();
@@ -88,7 +99,8 @@ async function createProject(program, params) {
         creatorBps,
         reserveBps,
         sinkBps,
-        launchAt
+        launchAt,
+        operatorType
       )
       .accounts({
         mint: mintPubkey,
@@ -129,7 +141,7 @@ async function createProject(program, params) {
  * @param {number} [params.stepSize=0] — tokens per step (step curve only)
  * @param {number} [params.stepIncrement=0] — SOL price increase per step (step curve only)
  * @param {number} [params.endPrice=0] — ending price in SOL (linear curve only)
- * @param {number} [params.growthFactorK=0] — growth factor k (expLite curve; pass real k e.g. 2.5)
+ * @param {number} [params.growthFactorK=0] — growth factor k (expLite curve; passed as raw u64 to contract). Contract formula: price = base + base*k*pct_bps/10000/10000. Typical values: 5000-20000 for moderate growth.
  * @returns {Promise<{tx: string, cycleIndex: number, cycleState: PublicKey}>}
  * @throws {MammothError}
  */
@@ -159,6 +171,8 @@ async function openCycle(program, mintAddress, params) {
       : curveTypeStr === 'linear' ? { linear: {} }
       : { expLite: {} };
 
+    const projectEscrowToken = getAssociatedTokenAddressSync(mintPubkey, projectStatePda, true);
+
     const tx = await program.methods
       .openCycle(
         curveType,
@@ -168,12 +182,16 @@ async function openCycle(program, mintAddress, params) {
         new BN(stepSize),
         new BN(solToLamports(stepIncrement)),
         new BN(solToLamports(endPrice)),
-        new BN(Math.floor(growthFactorK * 1000)) // stored as k*1000 on-chain
+        new BN(growthFactorK) // raw u64 — contract divides by 10000*10000 internally
       )
       .accounts({
-        cycleState: cycleStatePda,
         projectState: projectStatePda,
-        creator: creatorPubkey,
+        cycleState: cycleStatePda,
+        projectEscrowToken,
+        mint: mintPubkey,
+        caller: creatorPubkey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .rpc({ commitment: 'confirmed' });
@@ -201,7 +219,10 @@ async function closeCycle(program, mintAddress) {
 
     const [projectStatePda] = getProjectStatePDA(mintPubkey);
     const projectState = await program.account.projectState.fetch(projectStatePda);
-    const cycleIndex = projectState.currentCycle - 1;
+    const _cc = typeof projectState.currentCycle === 'number'
+      ? projectState.currentCycle
+      : projectState.currentCycle.toNumber();
+    const cycleIndex = _cc - 1;
 
     if (cycleIndex < 0) {
       throw new MammothError(ErrorCode.NOT_ACTIVE, 'No open cycle to close');
@@ -270,14 +291,18 @@ async function setHardCap(program, mintAddress, hardCapAmount) {
  * @returns {Promise<{tx: string, amount: number}>}
  * @throws {MammothError}
  */
-async function buyTokens(program, mintAddress, amount) {
+async function buyTokens(program, mintAddress, amount, maxSolCost) {
   try {
     const mintPubkey = new PublicKey(mintAddress);
     const buyerPubkey = program.provider.publicKey;
 
     const [projectStatePda] = getProjectStatePDA(mintPubkey);
     const projectState = await program.account.projectState.fetch(projectStatePda);
-    const cycleIndex = projectState.currentCycle - 1;
+    // FIX H4/H5: currentCycle may be u8 (number) or BN — normalize
+    const currentCycle = typeof projectState.currentCycle === 'number'
+      ? projectState.currentCycle
+      : projectState.currentCycle.toNumber();
+    const cycleIndex = currentCycle - 1;
 
     if (cycleIndex < 0) {
       throw new MammothError(ErrorCode.NOT_ACTIVE, 'No active cycle for this project');
@@ -286,12 +311,17 @@ async function buyTokens(program, mintAddress, amount) {
     const [cycleStatePda] = getCycleStatePDA(projectStatePda, cycleIndex);
     const [protocolConfigPda] = getProtocolConfigPDA();
     const [protocolTreasuryPda] = getProtocolTreasuryPDA();
-    const buyerToken = await getAssociatedTokenAddress(mintPubkey, buyerPubkey);
+    const buyerToken = getAssociatedTokenAddressSync(mintPubkey, buyerPubkey);
 
     const amountBN = BN.isBN(amount) ? amount : new BN(amount);
+    // FIX TOCTOU: If maxSolCost not provided, use u64::MAX (disabled slippage check).
+    // Callers SHOULD provide a cap computed from computeBuyQuote for safety.
+    const maxCostBN = maxSolCost != null
+      ? (BN.isBN(maxSolCost) ? maxSolCost : new BN(maxSolCost))
+      : new BN('18446744073709551615'); // u64::MAX
 
     const tx = await program.methods
-      .buyTokens(amountBN)
+      .buyTokens(amountBN, maxCostBN)
       .accounts({
         projectState: projectStatePda,
         cycleState: cycleStatePda,
@@ -323,14 +353,17 @@ async function buyTokens(program, mintAddress, amount) {
  * @returns {Promise<{tx: string, amount: number}>}
  * @throws {MammothError}
  */
-async function exerciseRights(program, mintAddress, amount) {
+async function exerciseRights(program, mintAddress, amount, maxSolCost) {
   try {
     const mintPubkey = new PublicKey(mintAddress);
     const holderPubkey = program.provider.publicKey;
 
     const [projectStatePda] = getProjectStatePDA(mintPubkey);
     const projectState = await program.account.projectState.fetch(projectStatePda);
-    const cycleIndex = projectState.currentCycle - 1;
+    const _cc = typeof projectState.currentCycle === 'number'
+      ? projectState.currentCycle
+      : projectState.currentCycle.toNumber();
+    const cycleIndex = _cc - 1;
 
     if (cycleIndex < 0) {
       throw new MammothError(ErrorCode.NOT_RIGHTS_WINDOW, 'No active cycle for rights exercise');
@@ -338,16 +371,27 @@ async function exerciseRights(program, mintAddress, amount) {
 
     const [cycleStatePda] = getCycleStatePDA(projectStatePda, cycleIndex);
     const [holderRightsPda] = getHolderRightsPDA(cycleStatePda, holderPubkey);
-    const holderToken = await getAssociatedTokenAddress(mintPubkey, holderPubkey);
+    const [protocolConfigPda] = getProtocolConfigPDA();
+    const [protocolTreasuryPda] = getProtocolTreasuryPDA();
+    const holderToken = getAssociatedTokenAddressSync(mintPubkey, holderPubkey);
+    // FIX H2 (round 10): Include project_escrow_token — required by contract for token transfer
+    const projectEscrowToken = getAssociatedTokenAddressSync(mintPubkey, projectStatePda, true);
 
     const amountBN = BN.isBN(amount) ? amount : new BN(amount);
+    // FIX TOCTOU: slippage cap
+    const maxCostBN = maxSolCost != null
+      ? (BN.isBN(maxSolCost) ? maxSolCost : new BN(maxSolCost))
+      : new BN('18446744073709551615');
 
     const tx = await program.methods
-      .exerciseRights(amountBN)
+      .exerciseRights(amountBN, maxCostBN)
       .accounts({
         projectState: projectStatePda,
         cycleState: cycleStatePda,
         holderRights: holderRightsPda,
+        protocolConfig: protocolConfigPda,
+        protocolTreasury: protocolTreasuryPda,
+        projectEscrowToken,
         holderToken,
         mint: mintPubkey,
         holder: holderPubkey,
@@ -482,6 +526,71 @@ async function updateAuthority(program, params) {
   }
 }
 
+/**
+ * FIX C2 (round 10): Set Merkle root for rights distribution.
+ * @param {Program} program
+ * @param {string|PublicKey} mintAddress
+ * @param {Buffer|Uint8Array|number[]} merkleRoot — 32-byte root from MerkleRightsTree
+ * @param {number} holderCount — informational
+ * @param {number|BN|bigint} totalCommitted — total rights amount committed by tree (MerkleRightsTree.totalCommitted)
+ * @returns {Promise<{signature: string}>}
+ */
+async function setRightsMerkleRoot(program, mintAddress, merkleRoot, holderCount, totalCommitted) {
+  try {
+    const mintPubkey = new PublicKey(mintAddress);
+    const [projectStatePda] = getProjectStatePDA(mintPubkey);
+    const projectState = await program.account.projectState.fetch(projectStatePda);
+    const _cc = typeof projectState.currentCycle === 'number'
+      ? projectState.currentCycle
+      : projectState.currentCycle.toNumber();
+    const cycleIndex = _cc - 1;
+    if (cycleIndex < 0) {
+      throw new MammothError(ErrorCode.NOT_RIGHTS_WINDOW, 'No cycle open');
+    }
+    const [cycleStatePda] = getCycleStatePDA(projectStatePda, cycleIndex);
+    const rootArray = Array.isArray(merkleRoot) ? merkleRoot : Array.from(merkleRoot);
+    if (rootArray.length !== 32) {
+      throw new MammothError(ErrorCode.INVALID_PARAMS, `merkleRoot must be 32 bytes, got ${rootArray.length}`);
+    }
+    const committedBN = BN.isBN(totalCommitted)
+      ? totalCommitted
+      : new BN(typeof totalCommitted === 'bigint' ? totalCommitted.toString() : totalCommitted);
+    const tx = await program.methods
+      .setRightsMerkleRoot(rootArray, holderCount, committedBN)
+      .accounts({
+        projectState: projectStatePda,
+        cycleState: cycleStatePda,
+        authorityConfig: null,
+        caller: program.provider.publicKey,
+      })
+      .rpc({ commitment: 'confirmed' });
+    return { signature: tx };
+  } catch (err) {
+    throw parseTxError(err);
+  }
+}
+
+/**
+ * FIX H6 (round 10): Rotate project creator to a new wallet.
+ */
+async function rotateCreator(program, mintAddress, newCreator) {
+  try {
+    const mintPubkey = new PublicKey(mintAddress);
+    const [projectStatePda] = getProjectStatePDA(mintPubkey);
+    const newCreatorPubkey = new PublicKey(newCreator);
+    const tx = await program.methods
+      .rotateCreator(newCreatorPubkey)
+      .accounts({
+        projectState: projectStatePda,
+        currentCreator: program.provider.publicKey,
+      })
+      .rpc({ commitment: 'confirmed' });
+    return { signature: tx };
+  } catch (err) {
+    throw parseTxError(err);
+  }
+}
+
 module.exports = {
   createProject,
   openCycle,
@@ -492,4 +601,6 @@ module.exports = {
   activateCycle,
   initializeAuthority,
   updateAuthority,
+  setRightsMerkleRoot,
+  rotateCreator,
 };
