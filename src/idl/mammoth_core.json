@@ -60,6 +60,11 @@
     },
     {
       "name": "buy_tokens",
+      "docs": [
+        "FIX (post-audit): Added max_sol_cost slippage parameter.",
+        "Caller passes the maximum total lamports they're willing to spend (including fee);",
+        "tx fails if the actual total cost exceeds this. Pass u64::MAX to disable."
+      ],
       "discriminator": [
         189,
         21,
@@ -426,7 +431,11 @@
           }
         },
         {
-          "name": "cycle_state"
+          "name": "cycle_state",
+          "docs": [
+            "FIX RA-8: cycle_state is now mut to track rights_allocated"
+          ],
+          "writable": true
         },
         {
           "name": "holder_rights",
@@ -498,6 +507,10 @@
       "accounts": [
         {
           "name": "project_state",
+          "docs": [
+            "FIX RA-1: project_state is now mut to clear has_active_cycle flag"
+          ],
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -549,7 +562,46 @@
           }
         },
         {
+          "name": "sink",
+          "docs": [
+            "FIX RA-6: Dedicated sink PDA — SOL sent here is effectively burned (no withdrawal instruction)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  105,
+                  110,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state"
+              }
+            ]
+          }
+        },
+        {
           "name": "creator",
+          "docs": [
+            "FIX SC-1: Creator must match project_state.creator — SOL always goes to real creator."
+          ],
+          "writable": true
+        },
+        {
+          "name": "authority_config",
+          "docs": [
+            "FIX SC-7: Support authority delegation for close_cycle.",
+            "Optional — pass None when caller is creator, Some when caller is operator."
+          ],
+          "optional": true
+        },
+        {
+          "name": "caller",
           "writable": true,
           "signer": true
         },
@@ -601,7 +653,11 @@
           }
         },
         {
-          "name": "cycle_state"
+          "name": "cycle_state",
+          "docs": [
+            "FIX RA-8: cycle_state is now mut to track rights_allocated"
+          ],
+          "writable": true
         },
         {
           "name": "holder_rights",
@@ -634,9 +690,6 @@
           "name": "creator",
           "writable": true,
           "signer": true
-        },
-        {
-          "name": "holder_account"
         },
         {
           "name": "system_program",
@@ -1013,6 +1066,57 @@
           }
         },
         {
+          "name": "reserve",
+          "docs": [
+            "FIX (integration test): Reserve PDA — funded with rent-exempt min during create_project"
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "sink",
+          "docs": [
+            "FIX (integration test): Sink PDA — funded with rent-exempt min during create_project"
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  105,
+                  110,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state"
+              }
+            ]
+          }
+        },
+        {
           "name": "protocol_config",
           "pda": {
             "seeds": [
@@ -1108,6 +1212,11 @@
     },
     {
       "name": "exercise_rights",
+      "docs": [
+        "FIX (post-audit): Added max_sol_cost slippage parameter.",
+        "Caller passes the maximum lamports they're willing to spend; tx fails if",
+        "the actual cost exceeds this. Pass u64::MAX to disable the check."
+      ],
       "discriminator": [
         38,
         220,
@@ -1170,6 +1279,69 @@
               {
                 "kind": "account",
                 "path": "holder"
+              }
+            ]
+          }
+        },
+        {
+          "name": "protocol_config",
+          "docs": [
+            "FIX SC-4: Protocol config needed for fee_bps"
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "protocol_treasury",
+          "docs": [
+            "FIX SC-4: Protocol treasury receives fee SOL"
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
               }
             ]
           }
@@ -1647,6 +1819,101 @@
           "writable": true
         },
         {
+          "name": "project_escrow_token",
+          "docs": [
+            "FIX SC-9: Escrow token account needed to validate supply_cap against available tokens"
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "project_state"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
           "name": "authority_config",
           "docs": [
             "Optional — pass None when caller is creator (no AuthorityConfig needed).",
@@ -1658,6 +1925,14 @@
           "name": "caller",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
         },
         {
           "name": "system_program",
@@ -1700,6 +1975,119 @@
         {
           "name": "growth_factor_k",
           "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "reclaim_cycle_rent",
+      "docs": [
+        "FIX F9: Creator can reclaim rent from closed cycle accounts.",
+        "Cycle must have been closed for at least 7 days to preserve on-chain history.",
+        "Zeroes the account and returns all remaining lamports to creator."
+      ],
+      "discriminator": [
+        171,
+        144,
+        112,
+        20,
+        205,
+        132,
+        89,
+        65
+      ],
+      "accounts": [
+        {
+          "name": "project_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  106,
+                  101,
+                  99,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state.mint",
+                "account": "ProjectState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "cycle_state",
+          "writable": true
+        },
+        {
+          "name": "creator",
+          "docs": [
+            "FIX C-1: Creator must sign this instruction — prevents griefing/unauthorized closure"
+          ],
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "rotate_creator",
+      "docs": [
+        "FIX H6 (round 10): Allow current creator to transfer ownership to a new wallet.",
+        "Without this, creator key loss would permanently lock reserve + block future actions.",
+        "Must be signed by the CURRENT creator. AuthorityConfig's principal is NOT updated —",
+        "operator delegations survive, but new principal must re-issue authority if desired."
+      ],
+      "discriminator": [
+        65,
+        236,
+        156,
+        189,
+        194,
+        232,
+        216,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "project_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  106,
+                  101,
+                  99,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state.mint",
+                "account": "ProjectState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "current_creator",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_creator",
+          "type": "pubkey"
         }
       ]
     },
@@ -1769,7 +2157,7 @@
         "The root commits to a list of (holder_pubkey, rights_amount) pairs computed off-chain.",
         "Holders then claim their rights by submitting a Merkle proof via claim_rights.",
         "",
-        "@param merkle_root   32-byte Keccak256 Merkle root of leaf hashes",
+        "@param merkle_root   32-byte SHA-256 Merkle root with domain separation (0x00 leaf, 0x01 node)",
         "@param holder_count  informational count of holders in the snapshot (not verified on-chain)"
       ],
       "discriminator": [
@@ -1943,6 +2331,168 @@
         },
         {
           "name": "spending_limit_lamports",
+          "type": "u64"
+        },
+        {
+          "name": "can_set_merkle_root",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "update_protocol_config",
+      "docs": [
+        "Admin-only. Updates protocol fee and default BPS splits.",
+        "Allows fixing misconfigurations without redeploying."
+      ],
+      "discriminator": [
+        197,
+        97,
+        123,
+        54,
+        221,
+        168,
+        11,
+        135
+      ],
+      "accounts": [
+        {
+          "name": "protocol_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "protocol_config"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "fee_bps",
+          "type": "u16"
+        },
+        {
+          "name": "default_creator_bps",
+          "type": "u16"
+        },
+        {
+          "name": "default_reserve_bps",
+          "type": "u16"
+        },
+        {
+          "name": "default_sink_bps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "withdraw_reserve",
+      "docs": [
+        "FIX C-3 (final audit): Creator withdraws from the reserve PDA.",
+        "FIX L-B (round 6): Reserve PDA is System-owned (never init'd with program owner),",
+        "so we must use system_program::transfer with invoke_signed. Direct lamport",
+        "mutation fails at runtime for System-owned accounts.",
+        "Reserve accumulates reserve_bps share of each closed cycle's SOL.",
+        "The sink PDA intentionally has NO withdrawal instruction (funds are burned)."
+      ],
+      "discriminator": [
+        165,
+        158,
+        228,
+        5,
+        114,
+        119,
+        194,
+        14
+      ],
+      "accounts": [
+        {
+          "name": "project_state",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  106,
+                  101,
+                  99,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state.mint",
+                "account": "ProjectState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "reserve",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  115,
+                  101,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project_state"
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
           "type": "u64"
         }
       ]
@@ -2239,6 +2789,86 @@
       "code": 6020,
       "name": "OperatorNotRegistered",
       "msg": "No AuthorityConfig found — call initialize_authority first"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidBpsSplit",
+      "msg": "BPS split must sum to 10000 (creator+reserve+sink) and public+protocol fee <= 10000"
+    },
+    {
+      "code": 6022,
+      "name": "SupplyCapExceedsEscrow",
+      "msg": "Cycle supply cap exceeds available escrow balance"
+    },
+    {
+      "code": 6023,
+      "name": "AlreadyDistributed",
+      "msg": "Funds already distributed for this cycle"
+    },
+    {
+      "code": 6024,
+      "name": "MerkleRootAlreadySet",
+      "msg": "Merkle root already set — cannot overwrite after claims have begun"
+    },
+    {
+      "code": 6025,
+      "name": "CycleStillActive",
+      "msg": "Cannot open a new cycle while a previous cycle is still active — close it first"
+    },
+    {
+      "code": 6026,
+      "name": "InvalidRightsWindow",
+      "msg": "Rights window duration must be between 0 and 30 days (2,592,000 seconds)"
+    },
+    {
+      "code": 6027,
+      "name": "SlippageExceeded",
+      "msg": "Transaction cost exceeds caller's max_sol_cost slippage cap"
+    },
+    {
+      "code": 6028,
+      "name": "InsufficientReserveBalance",
+      "msg": "Withdrawal amount exceeds reserve balance (after rent-exempt minimum)"
+    },
+    {
+      "code": 6029,
+      "name": "InvalidCurveParam",
+      "msg": "Invalid curve parameter (e.g., growth_factor_k too large)"
+    },
+    {
+      "code": 6030,
+      "name": "PurchaseTooLarge",
+      "msg": "Purchase too large for single tx — split into smaller buys (compute unit limit)"
+    },
+    {
+      "code": 6031,
+      "name": "RightsPathConflict",
+      "msg": "Cannot mix legacy create_holder_rights with Merkle-based rights — pick one path"
+    },
+    {
+      "code": 6032,
+      "name": "InvalidCycleProject",
+      "msg": "Cycle does not belong to project"
+    },
+    {
+      "code": 6033,
+      "name": "InvalidProjectMint",
+      "msg": "Mint does not match project mint"
+    },
+    {
+      "code": 6034,
+      "name": "InvalidRightsProject",
+      "msg": "Rights account does not belong to project"
+    },
+    {
+      "code": 6035,
+      "name": "InvalidRightsCycle",
+      "msg": "Rights account cycle does not match active cycle"
+    },
+    {
+      "code": 6036,
+      "name": "InvalidRightsHolder",
+      "msg": "Rights account holder does not match signer"
     }
   ],
   "types": [
@@ -2286,6 +2916,12 @@
           },
           {
             "name": "can_set_merkle_root",
+            "docs": [
+              "FIX M-1 (round 5): Separate permission for setting Merkle root.",
+              "Previously reused can_open_cycle, letting an operator set malicious rights trees.",
+              "NOTE (H-A round 6): Adding this field changed AuthorityConfig::LEN. Fresh deployments",
+              "only — existing accounts (if any) must be re-initialized via close+initialize_authority."
+            ],
             "type": "bool"
           },
           {
@@ -2492,17 +3128,28 @@
           },
           {
             "name": "rights_allocated",
-            "docs": ["FIX RA-8: Cumulative rights allocated via claim_rights / create_holder_rights"],
+            "docs": [
+              "FIX RA-8: Track cumulative rights allocated to prevent over-allocation beyond supply_cap"
+            ],
             "type": "u64"
           },
           {
             "name": "rights_reserved_at_activation",
-            "docs": ["FIX H-R6-2 (round 7): Snapshot of unexercised rights at activation time"],
+            "docs": [
+              "FIX H-R6-2 (round 7): Snapshot of unexercised rights at activation time.",
+              "This is the number of tokens that MUST remain protected from public buyers.",
+              "Frozen when activate_cycle runs. Prevents erosion as cycle.minted grows from public buys."
+            ],
             "type": "u64"
           },
           {
             "name": "rights_committed",
-            "docs": ["FIX H-R7-1 (round 8): Total rights committed via Merkle root"],
+            "docs": [
+              "FIX H-R7-1 (round 8): Total rights committed via Merkle root.",
+              "Set in set_rights_merkle_root; ensures unclaimed Merkle rights are protected at activation.",
+              "If set, snapshot uses max(rights_allocated, rights_committed) to reserve space for all",
+              "potential claimants even if they didn't claim before rights_window_end."
+            ],
             "type": "u64"
           },
           {
@@ -2753,6 +3400,13 @@
                 "name": "OperatorType"
               }
             }
+          },
+          {
+            "name": "has_active_cycle",
+            "docs": [
+              "FIX RA-1: Track whether a cycle is currently active to prevent concurrent cycles"
+            ],
+            "type": "bool"
           },
           {
             "name": "bump",
