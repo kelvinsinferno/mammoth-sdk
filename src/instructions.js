@@ -142,6 +142,7 @@ async function createProject(program, params) {
  * @param {number} [params.stepIncrement=0] — SOL price increase per step (step curve only)
  * @param {number} [params.endPrice=0] — ending price in SOL (linear curve only)
  * @param {number} [params.growthFactorK=0] — growth factor k (expLite curve; passed as raw u64 to contract). Contract formula: price = base + base*k*pct_bps/10000/10000. Typical values: 5000-20000 for moderate growth.
+ * @param {BN|number|null} [params.activatesAt=null] — optional Unix timestamp (seconds). When set, the on-chain program rejects buy_tokens / exercise_rights / claim_rights until clock >= activates_at. The rights window is shifted to open at activates_at and close at activates_at + rightsWindowDuration. Enables scheduled launches for any cycle (1st or Nth) with a single signature now — activate_cycle is permissionless and auto-triggers once T passes.
  * @returns {Promise<{tx: string, cycleIndex: number, cycleState: PublicKey}>}
  * @throws {MammothError}
  */
@@ -164,12 +165,17 @@ async function openCycle(program, mintAddress, params) {
       stepIncrement = 0,
       endPrice = 0,
       growthFactorK = 0,
+      activatesAt = null,
     } = params;
 
     const curveType =
       curveTypeStr === 'step' ? { step: {} }
       : curveTypeStr === 'linear' ? { linear: {} }
       : { expLite: {} };
+
+    const activatesAtBN = activatesAt == null
+      ? null
+      : (BN.isBN(activatesAt) ? activatesAt : new BN(activatesAt));
 
     const projectEscrowToken = getAssociatedTokenAddressSync(mintPubkey, projectStatePda, true);
 
@@ -182,7 +188,8 @@ async function openCycle(program, mintAddress, params) {
         new BN(stepSize),
         new BN(solToLamports(stepIncrement)),
         new BN(solToLamports(endPrice)),
-        new BN(growthFactorK) // raw u64 — contract divides by 10000*10000 internally
+        new BN(growthFactorK), // raw u64 — contract divides by 10000*10000 internally
+        activatesAtBN
       )
       .accounts({
         projectState: projectStatePda,

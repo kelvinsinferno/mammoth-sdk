@@ -1975,6 +1975,12 @@
         {
           "name": "growth_factor_k",
           "type": "u64"
+        },
+        {
+          "name": "activates_at",
+          "type": {
+            "option": "i64"
+          }
         }
       ]
     },
@@ -2767,106 +2773,111 @@
     },
     {
       "code": 6016,
+      "name": "CycleNotYetActivated",
+      "msg": "Cycle has not yet activated — scheduled start time not reached"
+    },
+    {
+      "code": 6017,
       "name": "MerkleRootNotSet",
       "msg": "Merkle root not set for this cycle — call set_rights_merkle_root first"
     },
     {
-      "code": 6017,
+      "code": 6018,
       "name": "InvalidMerkleProof",
       "msg": "Merkle proof is invalid — proof does not verify against stored root"
     },
     {
-      "code": 6018,
+      "code": 6019,
       "name": "InsufficientAuthority",
       "msg": "Operator lacks permission for this instruction"
     },
     {
-      "code": 6019,
+      "code": 6020,
       "name": "SpendingLimitExceeded",
       "msg": "Action exceeds operator spending limit — escalate to principal"
     },
     {
-      "code": 6020,
+      "code": 6021,
       "name": "OperatorNotRegistered",
       "msg": "No AuthorityConfig found — call initialize_authority first"
     },
     {
-      "code": 6021,
+      "code": 6022,
       "name": "InvalidBpsSplit",
       "msg": "BPS split must sum to 10000 (creator+reserve+sink) and public+protocol fee <= 10000"
     },
     {
-      "code": 6022,
+      "code": 6023,
       "name": "SupplyCapExceedsEscrow",
       "msg": "Cycle supply cap exceeds available escrow balance"
     },
     {
-      "code": 6023,
+      "code": 6024,
       "name": "AlreadyDistributed",
       "msg": "Funds already distributed for this cycle"
     },
     {
-      "code": 6024,
+      "code": 6025,
       "name": "MerkleRootAlreadySet",
       "msg": "Merkle root already set — cannot overwrite after claims have begun"
     },
     {
-      "code": 6025,
+      "code": 6026,
       "name": "CycleStillActive",
       "msg": "Cannot open a new cycle while a previous cycle is still active — close it first"
     },
     {
-      "code": 6026,
+      "code": 6027,
       "name": "InvalidRightsWindow",
       "msg": "Rights window duration must be between 0 and 30 days (2,592,000 seconds)"
     },
     {
-      "code": 6027,
+      "code": 6028,
       "name": "SlippageExceeded",
       "msg": "Transaction cost exceeds caller's max_sol_cost slippage cap"
     },
     {
-      "code": 6028,
+      "code": 6029,
       "name": "InsufficientReserveBalance",
       "msg": "Withdrawal amount exceeds reserve balance (after rent-exempt minimum)"
     },
     {
-      "code": 6029,
+      "code": 6030,
       "name": "InvalidCurveParam",
       "msg": "Invalid curve parameter (e.g., growth_factor_k too large)"
     },
     {
-      "code": 6030,
+      "code": 6031,
       "name": "PurchaseTooLarge",
       "msg": "Purchase too large for single tx — split into smaller buys (compute unit limit)"
     },
     {
-      "code": 6031,
+      "code": 6032,
       "name": "RightsPathConflict",
       "msg": "Cannot mix legacy create_holder_rights with Merkle-based rights — pick one path"
     },
     {
-      "code": 6032,
+      "code": 6033,
       "name": "InvalidCycleProject",
       "msg": "Cycle does not belong to project"
     },
     {
-      "code": 6033,
+      "code": 6034,
       "name": "InvalidProjectMint",
       "msg": "Mint does not match project mint"
     },
     {
-      "code": 6034,
+      "code": 6035,
       "name": "InvalidRightsProject",
       "msg": "Rights account does not belong to project"
     },
     {
-      "code": 6035,
+      "code": 6036,
       "name": "InvalidRightsCycle",
       "msg": "Rights account cycle does not match active cycle"
     },
     {
-      "code": 6036,
+      "code": 6037,
       "name": "InvalidRightsHolder",
       "msg": "Rights account holder does not match signer"
     }
@@ -3038,6 +3049,12 @@
             "type": "i64"
           },
           {
+            "name": "activates_at",
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
             "name": "timestamp",
             "type": "i64"
           }
@@ -3151,6 +3168,22 @@
               "potential claimants even if they didn't claim before rights_window_end."
             ],
             "type": "u64"
+          },
+          {
+            "name": "activates_at",
+            "docs": [
+              "FIX SCHED-1: Optional on-chain gate for scheduled cycle launches.",
+              "When Some, all user-facing token-moving instructions (buy_tokens,",
+              "exercise_rights, claim_rights) reject with CycleNotYetActivated until",
+              "`clock.unix_timestamp >= activates_at`. The rights window is shifted",
+              "forward so it opens at activates_at and ends at activates_at + duration,",
+              "letting creators schedule any cycle (1st or Nth) without needing a",
+              "second signature at the scheduled time — activate_cycle is permissionless",
+              "and can be called by anyone (keeper, first visitor) once T passes."
+            ],
+            "type": {
+              "option": "i64"
+            }
           },
           {
             "name": "bump",
