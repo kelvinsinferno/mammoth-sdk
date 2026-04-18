@@ -196,6 +196,7 @@ async function openCycle(program, mintAddress, params) {
         cycleState: cycleStatePda,
         projectEscrowToken,
         mint: mintPubkey,
+        authorityConfig: null, // Optional Anchor account — null = creator calling directly
         caller: creatorPubkey,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
